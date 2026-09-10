@@ -153,7 +153,7 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 groq_client = None
 if GROQ_API_KEY:
     try:
-        groq_client = ChatGroq(model="qwen/qwen3-32b", groq_api_key=GROQ_API_KEY, temperature=0.1)
+        groq_client = ChatGroq(model="qwen/qwen3.8-27b", groq_api_key=GROQ_API_KEY, temperature=0.1)
         app.logger.info("Groq client initialized.")
     except Exception as e:
         app.logger.error(f"Failed to initialize Groq client: {e}")
