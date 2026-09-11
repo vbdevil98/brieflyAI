@@ -368,8 +368,8 @@ def get_article_analysis_with_groq(article_text, article_title=""):
     if not article_text or not article_text.strip(): return {"error": "No text provided for AI analysis."}
     app.logger.info(f"Requesting Groq analysis for: {article_title[:50]}...")
     system_prompt = ("You are an expert news analyst. Analyze the following article. "
-        "1. Provide a concise, neutral summary (3-4 paragraphs). "
-        "2. List 5-7 key takeaways as bullet points. Each takeaway must be a complete sentence. "
+        "1. Provide a tight, neutral summary of 2-3 sentences (under 60 words total). Lead with the single most important fact. No preamble, no repetition of the headline. "
+        "2. List exactly 3-4 key takeaways as short bullet points. Each takeaway must be one complete sentence under 20 words. "
         "Format your entire response as a single JSON object with keys 'summary' (string) and 'takeaways' (a list of strings).")
     human_prompt = f"Article Title: {article_title}\n\nArticle Text:\n{article_text[:20000]}"
     try:
@@ -421,7 +421,7 @@ def get_daily_synthesis():
     system_prompt = (
         "You are a top-tier news editor for an Indian audience. Your task is to provide a 'big picture' summary of the day's news based on a collection of article titles and descriptions. "
         "Analyze the provided text and generate a JSON object with two keys: 'synthesis_text' and 'keywords'. "
-        "1. For 'synthesis_text': Write a single, insightful, and cohesive paragraph (3-4 sentences) that synthesizes the most important themes, trends, or events of the day. Do not just list the news. Connect the ideas. "
+        "1. For 'synthesis_text': Write a single, insightful paragraph of exactly 2 sentences (under 45 words total) that connects the day's most important themes. Do not list the news; connect the ideas. Be punchy and specific. "
         "2. For 'keywords': Extract the 4-5 most significant and distinct keywords or key phrases from the articles. These should represent the main topics of the day."
     )
     
@@ -1566,442 +1566,595 @@ BASE_HTML_TEMPLATE = """
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0B0C10">
     <title>{% block title %}BrieflyAI{% endblock %}</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+
+    {# Two families only, one request, display=swap so text paints immediately in a fallback. #}
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap" rel="stylesheet">
+
+    {# Font Awesome is decorative only -- load it without blocking first paint. #}
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" media="print" onload="this.media='all';this.onload=null;">
+    <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"></noscript>
+
     <style>
+        /* ==========================================================================
+           DESIGN TOKENS
+           ========================================================================== */
         :root {
-            --primary-color: #4F46E5; --primary-light: #6366F1; --primary-dark: #4338CA; --secondary-color: #14B8A6; --secondary-light: #2DD4BF; --accent-color: #F97316; --text-color: #1F2937; --text-muted-color: #6B7280; --light-bg: #F9FAFB; --card-bg: #FFFFFF; --card-border-color: #E5E7EB; --footer-bg: #111827; --footer-text: #D1D5DB; --footer-link-hover: var(--primary-light);
-            --primary-color-rgb: 79, 70, 229; --secondary-color-rgb: 20, 184, 166; --text-muted-color-rgb: 107, 114, 128;
-            --bookmark-active-color: var(--secondary-color);
-            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05); --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-            --border-radius-sm: 0.375rem; --border-radius-md: 0.5rem; --border-radius-lg: 0.75rem;
+            --primary-color: #4338CA; --primary-light: #6D5FF7; --primary-dark: #2D278A;
+            --secondary-color: #0D9488; --secondary-light: #14B8A6; --accent-color: #EA580C;
+            --text-color: #0B0C0F; --text-muted-color: #5B5F6A;
+            --light-bg: #F6F5F2; --card-bg: #FFFFFF; --card-border-color: #E4E2DB;
+            --footer-bg: #0A0A0D; --footer-text: #A9ACB6; --footer-link-hover: var(--secondary-light);
+            --primary-color-rgb: 67, 56, 202; --secondary-color-rgb: 13, 148, 136; --accent-color-rgb: 234, 88, 12; --text-muted-color-rgb: 91, 95, 106;
+            --card-bg-rgb: 255, 255, 255;
+            --bookmark-active-color: var(--accent-color);
+
+            --glass-bg: rgba(11, 12, 16, 0.72);
+            --glass-border: rgba(255, 255, 255, 0.10);
+            --glass-blur: 16px;
+            --surface-gradient: linear-gradient(160deg, rgba(var(--primary-color-rgb), 0.05), rgba(var(--secondary-color-rgb), 0.03));
+
+            --shadow-sm: 0 1px 2px 0 rgb(10 10 12 / 0.05);
+            --shadow-md: 0 4px 14px -3px rgb(10 10 12 / 0.10), 0 2px 5px -2px rgb(10 10 12 / 0.05);
+            --shadow-lg: 0 18px 38px -10px rgb(10 10 12 / 0.18), 0 8px 14px -6px rgb(10 10 12 / 0.08);
+            --shadow-glow: 0 8px 24px -6px rgba(var(--primary-color-rgb), 0.45);
+
+            --border-radius-xs: 0.375rem; --border-radius-sm: 0.55rem; --border-radius-md: 0.85rem;
+            --border-radius-lg: 1.15rem; --border-radius-pill: 999px;
+
+            --font-display: 'Instrument Serif', 'Iowan Old Style', Georgia, serif;
+            --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+            --font-body: var(--font-sans);
+            --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+            --text-xs: 0.72rem; --text-sm: 0.82rem; --text-base: 1rem; --text-md: 1.06rem;
+            --text-lg: 1.16rem; --text-xl: 1.4rem; --text-2xl: 1.8rem;
+            --text-3xl: clamp(2.1rem, 4.6vw, 3rem); --text-4xl: clamp(2.5rem, 6vw, 3.75rem);
+
+            --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem; --space-4: 1rem; --space-5: 1.5rem; --space-6: 2rem; --space-7: 3rem;
+
+            --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+            --ease-premium: cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+            --duration-fast: 150ms; --duration-base: 240ms; --duration-slow: 420ms;
+
+            --skeleton-base: #ECEAE5; --skeleton-sheen: #F8F7F4;
         }
-        body { padding-top: 85px; font-family: 'Inter', sans-serif; line-height: 1.65; color: var(--text-color); background-color: var(--light-bg); display: flex; flex-direction: column; min-height: 100vh; transition: background-color 0.3s ease, color 0.3s ease; }
-        .main-content { flex-grow: 1; }
         body.dark-mode {
-            --primary-color: #6366F1; --primary-light: #818CF8; --primary-dark: #4F46E5; --secondary-color: #2DD4BF; --secondary-light: #5EEAD4; --accent-color: #FB923C; --text-color: #F9FAFB; --text-muted-color: #9CA3AF; --light-bg: #111827; --card-bg: #1F2937; --card-border-color: #374151; --footer-bg: #000000; --footer-text: #9CA3AF;
-            --primary-color-rgb: 99, 102, 241; --secondary-color-rgb: 45, 212, 191; --text-muted-color-rgb: 156, 163, 175;
-            --bookmark-active-color: var(--secondary-light);
+            --primary-color: #8B82FF; --primary-light: #ADA4FF; --primary-dark: #6D5FF7;
+            --secondary-color: #2DD4BF; --secondary-light: #5EEAD4; --accent-color: #FB923C;
+            --text-color: #F3F3F5; --text-muted-color: #9AA0AC;
+            --light-bg: #08080B; --card-bg: #131317; --card-border-color: #26262E;
+            --footer-bg: #000000; --footer-text: #9AA0AC;
+            --primary-color-rgb: 139, 130, 255; --secondary-color-rgb: 45, 212, 191; --accent-color-rgb: 251, 146, 60; --text-muted-color-rgb: 154, 160, 172;
+            --card-bg-rgb: 19, 19, 23;
+            --glass-bg: rgba(8, 8, 11, 0.72);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --bookmark-active-color: var(--accent-color);
+            --skeleton-base: #1C1C22; --skeleton-sheen: #292930;
         }
-        h1, h2, h3, h4, h5, .auth-title, .profile-card h2, .article-title-main, .modal-title { font-family: 'Poppins', sans-serif; font-weight: 700; }
-        .alert-top { position: fixed; top: 90px; left: 50%; transform: translateX(-50%); z-index: 2050; min-width:320px; text-align:center; box-shadow: var(--shadow-lg); border-radius: var(--border-radius-md); }
-        .navbar-main { background-color: var(--primary-color); padding: 0.75rem 0; box-shadow: var(--shadow-md); transition: background-color 0.3s ease; z-index: 1040; position: fixed; top: 0; width: 100%;}
+
+        @media (prefers-reduced-motion: reduce) {
+            /* Delays must be zeroed too, not just durations: a staggered animation-delay with
+               fill-mode "both" holds the element at its 0-opacity start state for the delay. */
+            *, *::before, *::after {
+                animation-duration: 0.001ms !important;
+                animation-delay: 0s !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.001ms !important;
+                transition-delay: 0s !important;
+                scroll-behavior: auto !important;
+            }
+            [data-reveal] { opacity: 1 !important; transform: none !important; }
+        }
+
+        /* ==========================================================================
+           BASE
+           ========================================================================== */
+        *, *::before, *::after { box-sizing: border-box; }
+        html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+        ::selection { background: rgba(var(--primary-color-rgb), 0.22); }
+        body {
+            padding-top: 84px; margin: 0; font-family: var(--font-sans); font-size: 1rem; line-height: 1.65;
+            color: var(--text-color); background-color: var(--light-bg);
+            display: flex; flex-direction: column; min-height: 100vh;
+            transition: background-color 0.35s var(--ease-standard), color 0.35s var(--ease-standard);
+            -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+            overflow-x: hidden;
+        }
+        .main-content { flex-grow: 1; }
+        p { max-width: 75ch; }
+        a { color: var(--primary-color); text-underline-offset: 0.2em; }
+        a:hover { color: var(--primary-dark); }
+        img { max-width: 100%; }
+
+        h1, h2, h3, h4, h5 { font-family: var(--font-sans); font-weight: 700; letter-spacing: -0.022em; line-height: 1.22; }
+
+        /* Editorial serif for the big moments only -- headlines, page titles, pull quotes. */
+        .display-serif,
+        .article-title-main,
+        .featured-story-content h2,
+        .page-header-static h1,
+        .synthesis-text,
+        .auth-header h1,
+        .profile-header-card h1,
+        .state-card-title {
+            font-family: var(--font-display);
+            font-weight: 400;
+            letter-spacing: -0.01em;
+            line-height: 1.12;
+        }
+
+        .eyebrow { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.13em; color: var(--primary-color); }
+        .section-heading { font-size: var(--text-2xl); font-weight: 700; margin: 0; letter-spacing: -0.025em; }
+
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: var(--light-bg); }
+        ::-webkit-scrollbar-thumb { background: var(--card-border-color); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted-color); }
+
+        a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible,
+        .btn:focus-visible, .nav-link:focus-visible, .page-link:focus-visible, .dropdown-item:focus-visible,
+        [tabindex]:focus-visible, summary:focus-visible {
+            outline: 2.5px solid var(--primary-color); outline-offset: 2px; border-radius: var(--border-radius-xs);
+        }
+
+        /* ==========================================================================
+           ANIMATION UTILITIES
+           ========================================================================== */
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes skeletonShimmer { 0% { background-position: 150% 0; } 100% { background-position: -50% 0; } }
+        @keyframes bookmarkPop { 0% { transform: scale(1); } 35% { transform: scale(1.34); } 60% { transform: scale(0.92); } 100% { transform: scale(1); } }
+        .animate-fade-in { animation: fadeInUp 0.55s var(--ease-premium) both; }
+        .bookmark-btn.is-popping { animation: bookmarkPop 0.45s var(--ease-spring); }
+
+        /* Scroll-triggered reveal. The attribute is added by JS, so no-JS users never see hidden content. */
+        [data-reveal] { opacity: 0; transform: translateY(22px); transition: opacity 0.7s var(--ease-premium), transform 0.7s var(--ease-premium); transition-delay: var(--reveal-delay, 0ms); will-change: opacity, transform; }
+        [data-reveal].is-revealed { opacity: 1; transform: none; }
+
+        /* ==========================================================================
+           BUTTONS
+           ========================================================================== */
+        .btn { border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.9rem; letter-spacing: -0.005em; transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring), color var(--duration-base) var(--ease-standard); }
+        .btn:hover { transform: translateY(-1px); }
+        .btn:active { transform: translateY(0) scale(0.975); }
+        .btn-primary { --bs-btn-bg: var(--primary-color); --bs-btn-border-color: var(--primary-color); --bs-btn-hover-bg: var(--primary-dark); --bs-btn-hover-border-color: var(--primary-dark); --bs-btn-active-bg: var(--primary-dark); --bs-btn-active-border-color: var(--primary-dark); --bs-btn-focus-shadow-rgb: var(--primary-color-rgb); }
+        .btn-primary:hover, .btn-primary:focus { box-shadow: var(--shadow-glow); }
+        .btn-primary-modal { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); border: none; color: #fff; border-radius: var(--border-radius-sm); font-weight: 600; padding: 0.65rem 1.5rem; transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring), filter var(--duration-base) var(--ease-standard); }
+        .btn-primary-modal:hover { color: #fff; filter: brightness(1.07); box-shadow: var(--shadow-glow); transform: translateY(-1px); }
+        .btn-primary-modal:active { transform: translateY(0) scale(0.975); }
+        .btn-outline-primary { --bs-btn-color: var(--primary-color); --bs-btn-border-color: var(--primary-color); --bs-btn-hover-bg: var(--primary-color); --bs-btn-hover-border-color: var(--primary-color); --bs-btn-active-bg: var(--primary-color); --bs-btn-active-border-color: var(--primary-color); }
+        .btn-outline-secondary { --bs-btn-color: var(--text-muted-color); --bs-btn-border-color: var(--card-border-color); --bs-btn-hover-bg: var(--text-color); --bs-btn-hover-border-color: var(--text-color); }
+        .btn-danger { --bs-btn-bg: #DC2626; --bs-btn-border-color: #DC2626; --bs-btn-hover-bg: #B91C1C; --bs-btn-hover-border-color: #B91C1C; }
+        .btn .spinner-border { vertical-align: -0.15em; }
+        /* Arrow nudge on hover. */
+        .btn i.fa-arrow-right, .btn i.fa-chevron-right, .read-more i, .read-more-btn i { transition: transform var(--duration-base) var(--ease-spring); }
+        .btn:hover i.fa-arrow-right, .btn:hover i.fa-chevron-right, .read-more:hover i, .read-more-btn:hover i { transform: translateX(4px); }
+
+        /* ==========================================================================
+           FORMS
+           ========================================================================== */
+        .form-control, .form-select { border-radius: var(--border-radius-sm); border-color: var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); transition: border-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard); }
+        .form-control:focus, .form-select:focus { border-color: var(--primary-color); box-shadow: 0 0 0 3.5px rgba(var(--primary-color-rgb), 0.16); background-color: var(--card-bg); color: var(--text-color); }
+        .form-control::placeholder { color: var(--text-muted-color); opacity: 0.72; }
+        .text-primary { color: var(--primary-color) !important; }
+
+        /* ==========================================================================
+           TOASTS
+           ========================================================================== */
+        #alert-placeholder { position: fixed; top: 98px; left: 50%; transform: translateX(-50%); z-index: 2050; display: flex; flex-direction: column; align-items: stretch; gap: 0.6rem; width: min(92vw, 420px); pointer-events: none; }
+        #alert-placeholder .alert { pointer-events: auto; position: relative; margin: 0; width: 100%; text-align: left; box-shadow: var(--shadow-lg); border-radius: var(--border-radius-md); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); display: flex; align-items: flex-start; gap: 0.65rem; padding: 0.9rem 2.6rem 0.9rem 1rem; animation: toastIn var(--duration-slow) var(--ease-spring) both; }
+        @keyframes toastIn { from { opacity: 0; transform: translateY(-16px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        #alert-placeholder .alert .alert-icon { font-size: 1.05rem; margin-top: 0.15rem; flex-shrink: 0; }
+        #alert-placeholder .alert.alert-success .alert-icon { color: var(--secondary-color); }
+        #alert-placeholder .alert.alert-danger .alert-icon { color: #DC2626; }
+        #alert-placeholder .alert.alert-warning .alert-icon { color: #D97706; }
+        #alert-placeholder .alert.alert-info .alert-icon { color: var(--primary-color); }
+        #alert-placeholder .alert .btn-close { position: absolute; top: 0.85rem; right: 0.85rem; font-size: 0.75rem; }
+        body.dark-mode #alert-placeholder .alert .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
+
+        /* ==========================================================================
+           NAVBAR (glass)
+           ========================================================================== */
+        .navbar-main {
+            position: fixed; top: 0; width: 100%; z-index: 1040; padding: 0.75rem 0;
+            background: var(--glass-bg);
+            -webkit-backdrop-filter: saturate(180%) blur(var(--glass-blur));
+            backdrop-filter: saturate(180%) blur(var(--glass-blur));
+            border-bottom: 1px solid var(--glass-border);
+            transition: padding var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), background-color var(--duration-base) var(--ease-standard);
+        }
+        @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+            .navbar-main { background: #0B0C10; }
+        }
+        .navbar-main.is-scrolled { padding: 0.5rem 0; box-shadow: 0 6px 24px -10px rgba(0,0,0,0.55); }
         .navbar-content-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; }
         .navbar-left { flex-shrink: 0; }
-        .navbar-center { flex-grow: 1; min-width: 150px; max-width: 550px; }
+        .navbar-center { flex-grow: 1; min-width: 150px; max-width: 540px; }
         .navbar-right { flex-shrink: 0; }
-        .navbar-brand-custom { color: white !important; font-weight: 700; font-size: 2rem; font-family: 'Poppins', sans-serif; display: flex; align-items: center; gap: 10px; text-decoration: none !important; }
-        .navbar-brand-custom .brand-icon { color: var(--secondary-light); font-size: 2.2rem; }
+        .navbar-brand-custom { color: #fff !important; font-weight: 800; font-size: 1.45rem; font-family: var(--font-sans); display: flex; align-items: center; gap: 9px; text-decoration: none !important; letter-spacing: -0.035em; }
+        .navbar-brand-custom .brand-icon { color: var(--secondary-light); font-size: 1.2rem; transition: transform var(--duration-base) var(--ease-spring); }
+        .navbar-brand-custom:hover .brand-icon { transform: rotate(-12deg) scale(1.12); }
+
         .search-container { position: relative; width: 100%; }
-        .navbar-search { width: 100%; border-radius: 50px; padding: 0.6rem 1.25rem 0.6rem 2.8rem; border: 1px solid transparent; font-size: 0.95rem; transition: all 0.3s ease; background: rgba(255,255,255,0.15); color: white; }
-        .navbar-search::placeholder { color: rgba(255,255,255,0.7); }
-        .navbar-search:focus { background: rgba(255,255,255,0.25); box-shadow: 0 0 0 4px rgba(255,255,255,0.2); border-color: var(--secondary-light); outline: none; color:white; }
-        .search-icon { color: rgba(255,255,255,0.8); transition: all 0.3s ease; left: 1.1rem; position: absolute; top: 50%; transform: translateY(-50%); }
+        .navbar-search { width: 100%; border-radius: var(--border-radius-pill); padding: 0.58rem 2.6rem 0.58rem 2.75rem; border: 1px solid rgba(255,255,255,0.13); font-size: 0.9rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard); background: rgba(255,255,255,0.07); color: #fff; }
+        .navbar-search::placeholder { color: rgba(255,255,255,0.5); }
+        .navbar-search:focus { background: rgba(255,255,255,0.12); box-shadow: 0 0 0 3.5px rgba(var(--primary-color-rgb), 0.4); border-color: var(--primary-light); outline: none; color: #fff; }
+        .search-icon { color: rgba(255,255,255,0.55); transition: color var(--duration-base) var(--ease-standard); left: 1.05rem; position: absolute; top: 50%; transform: translateY(-50%); font-size: 0.85rem; pointer-events: none; }
+        .search-container:focus-within .search-icon { color: var(--primary-light); }
+        .search-clear-btn { position: absolute; right: 0.45rem; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255,255,255,0.5); width: 28px; height: 28px; border-radius: 50%; display: none; align-items: center; justify-content: center; font-size: 0.8rem; transition: color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }
+        .search-clear-btn:hover { color: #fff; background: rgba(255,255,255,0.14); }
+        .search-container.has-value .search-clear-btn { display: flex; }
+
         .header-controls { display: flex; gap: 0.8rem; align-items: center; }
-        .header-btn { background: transparent; border: 1px solid rgba(255,255,255,0.4); padding: 0.5rem 1rem; border-radius: 50px; color: white; font-weight: 500; transition: all 0.3s ease; display: flex; align-items: center; gap: 0.5rem; cursor: pointer; text-decoration:none; font-size: 0.9rem; }
-        .header-btn:hover { background: rgba(255,255,255,0.9); border-color: transparent; color: var(--primary-dark); }
-       
-        /* === UNIFIED OFFCANVAS SIDEBAR === */
-        .offcanvas { background-color: #111827; color: var(--footer-text); z-index: 1045; }
-        body.dark-mode .offcanvas { background-color: var(--footer-bg); }
-        .offcanvas-header { border-bottom-color: #374151 !important; }
+        .header-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); padding: 0.5rem 1rem; border-radius: var(--border-radius-pill); color: #fff; font-weight: 600; transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); display: flex; align-items: center; gap: 0.5rem; cursor: pointer; text-decoration: none; font-size: 0.86rem; }
+        .header-btn:hover { background: var(--primary-color); border-color: var(--primary-color); color: #fff; transform: translateY(-1px); }
+        .header-btn:active { transform: scale(0.96); }
+
+        /* ==========================================================================
+           OFFCANVAS
+           ========================================================================== */
+        .offcanvas { background-color: #101116; color: var(--footer-text); z-index: 1045; border-left: 1px solid rgba(255,255,255,0.08); width: min(360px, 88vw); }
+        body.dark-mode .offcanvas { background-color: #0B0B0F; }
+        .offcanvas-header { border-bottom-color: rgba(255,255,255,0.08) !important; padding: 1.25rem 1.5rem; }
+        .offcanvas-title { font-family: var(--font-sans); font-weight: 700; letter-spacing: -0.02em; }
+        .offcanvas-body { padding: 1.5rem; }
         .offcanvas-header .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
         .sidebar-section { margin-bottom: 1.5rem; }
-        .sidebar-heading { font-size: 0.8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted-color); margin-bottom: 0.75rem; font-weight: 600; }
-        .sidebar-btn { display: flex; align-items: center; padding: 0.75rem 1rem; width: 100%; text-align: left; background-color: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: white; text-decoration: none; border-radius: var(--border-radius-md); transition: all 0.2s ease; }
-        .sidebar-btn:hover { background-color: rgba(255,255,255,0.1); border-color: var(--primary-light); color: white; }
-        .sidebar-avatar { width: 40px; height: 40px; border-radius: 50%; background-color: var(--primary-color); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.2rem; }
-        .offcanvas .dropdown-toggle { color: white; }
-        .offcanvas .dropdown-toggle::after { color: white; }
-        .offcanvas .dropdown-menu { background-color: #374151; border-color: #4B5563;}
-        .offcanvas .dropdown-item { color: var(--footer-text); }
-        .offcanvas .dropdown-item:hover { background-color: var(--primary-color); color: white; }
-        .offcanvas .nav-link { padding: 0.6rem 1rem; font-weight: 500; border-radius: var(--border-radius-sm); transition: background-color 0.2s ease, color 0.2s ease; color: var(--footer-text) !important; }
-        .offcanvas .nav-link.active { background-color: var(--primary-color); color: white !important; }
-        .offcanvas .nav-link:not(.active):hover { background-color: rgba(255,255,255,0.1); color: white !important; }
-        #dateFilterForm .form-control { background-color: #374151; border-color: #4B5563; color: white; }
-        #dateFilterForm .form-control:focus { background-color: #374151; border-color: var(--primary-color); box-shadow: none; color: white; }
-        #dateFilterForm .btn-primary { background-color: var(--primary-color); border-color: var(--primary-color); }
-        
-        .article-card, .article-full-content-wrapper, .auth-container, .profile-card { background: var(--card-bg); border-radius: var(--border-radius-lg); transition: all 0.3s ease; border: 1px solid var(--card-border-color); box-shadow: var(--shadow-md); }
-        .article-card:hover { transform: translateY(-5px); box-shadow: var(--shadow-lg); }
-        .article-image-container { height: 220px; overflow: hidden; position: relative; border-top-left-radius: var(--border-radius-lg); border-top-right-radius: var(--border-radius-lg);}
-        .article-image { width: 100%; height: 100%; object-fit: cover; transition: transform 0.4s ease; }
-        .article-card:hover .article-image { transform: scale(1.05); }
-        .article-body { padding: 1.5rem; flex-grow: 1; display: flex; flex-direction: column; }
-        .article-title { font-weight: 600; line-height: 1.4; margin-bottom: 0.6rem; font-size:1.15rem; }
-        .article-title a { color: var(--text-color); text-decoration: none; transition: color 0.2s ease; }
+        .sidebar-heading { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--text-muted-color); margin-bottom: 0.75rem; font-weight: 700; }
+        .sidebar-btn { display: flex; align-items: center; padding: 0.75rem 1rem; width: 100%; text-align: left; background-color: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); color: #fff; text-decoration: none; border-radius: var(--border-radius-md); transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
+        .sidebar-btn:hover { background-color: rgba(255,255,255,0.09); border-color: var(--primary-light); color: #fff; transform: translateX(2px); }
+        .sidebar-avatar { width: 40px; height: 40px; border-radius: 50%; background-image: linear-gradient(135deg, var(--primary-light), var(--secondary-color)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.15rem; flex-shrink: 0; }
+        .offcanvas .dropdown-toggle, .offcanvas .dropdown-toggle::after { color: #fff; }
+        .offcanvas .dropdown-menu { background-color: #1C1D25; border-color: #2E2F3A; border-radius: var(--border-radius-md); }
+        .offcanvas .dropdown-item { color: var(--footer-text); border-radius: var(--border-radius-sm); transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard); }
+        .offcanvas .dropdown-item:hover { background-color: var(--primary-color); color: #fff; }
+        .offcanvas .nav-link { padding: 0.65rem 1rem; font-weight: 600; border-radius: var(--border-radius-sm); transition: background-color var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); color: var(--footer-text) !important; }
+        .offcanvas .nav-link.active { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-dark)); color: #fff !important; box-shadow: var(--shadow-md); }
+        .offcanvas .nav-link:not(.active):hover { background-color: rgba(255,255,255,0.08); color: #fff !important; transform: translateX(3px); }
+        .offcanvas-search .navbar-search, .offcanvas-search .search-clear-btn { color: #fff; }
+        #dateFilterForm .form-control { background-color: #1C1D25; border-color: #2E2F3A; color: #fff; border-radius: var(--border-radius-sm); }
+        #dateFilterForm .form-control:focus { background-color: #1C1D25; border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(var(--primary-color-rgb),0.25); color: #fff; }
+        #dateFilterForm .btn-primary { border-radius: var(--border-radius-sm); }
+
+        /* ==========================================================================
+           TABS
+           ========================================================================== */
+        .nav-tabs { border-bottom: 1px solid var(--card-border-color); gap: 0.4rem; }
+        .nav-tabs .nav-link { border: none; background: transparent; color: var(--text-muted-color); font-weight: 700; font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.9rem 0.6rem; border-radius: 0; position: relative; transition: color var(--duration-base) var(--ease-standard); }
+        .nav-tabs .nav-link::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background-image: linear-gradient(90deg, var(--primary-color), var(--secondary-color)); transform: scaleX(0); transition: transform var(--duration-base) var(--ease-premium); }
+        .nav-tabs .nav-link.active { color: var(--text-color); background: transparent; }
+        .nav-tabs .nav-link.active::after { transform: scaleX(1); }
+        .nav-tabs .nav-link:not(.active):hover { color: var(--text-color); }
+        .nav-tabs .nav-link:not(.active):hover::after { transform: scaleX(0.35); }
+
+        /* ==========================================================================
+           CARDS
+           ========================================================================== */
+        .article-card, .article-full-content-wrapper { background: var(--card-bg); border-radius: var(--border-radius-lg); border: 1px solid var(--card-border-color); box-shadow: var(--shadow-sm); transition: transform var(--duration-base) var(--ease-premium), box-shadow var(--duration-base) var(--ease-premium), border-color var(--duration-base) var(--ease-standard); }
+        .article-card { position: relative; overflow: hidden; }
+        .article-card::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: var(--surface-gradient); opacity: 0; transition: opacity var(--duration-base) var(--ease-standard); pointer-events: none; }
+        .article-card:hover { transform: translateY(-6px); box-shadow: var(--shadow-lg); border-color: rgba(var(--primary-color-rgb), 0.35); }
+        .article-card:hover::after { opacity: 1; }
+
+        .article-image-container { height: 200px; overflow: hidden; position: relative; border-top-left-radius: var(--border-radius-lg); border-top-right-radius: var(--border-radius-lg); background: var(--skeleton-base); background-image: linear-gradient(100deg, var(--skeleton-base) 30%, var(--skeleton-sheen) 50%, var(--skeleton-base) 70%); background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
+        .article-image-container.is-loaded, .article-image-container.img-fallback { animation: none; background-image: none; }
+        .article-image-container.img-fallback { background: var(--light-bg); }
+        .article-image { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: transform 0.6s var(--ease-premium), opacity var(--duration-slow) var(--ease-standard); }
+        .article-image.is-loaded { opacity: 1; }
+        .img-fallback .article-image { display: none; }
+        .article-card:hover .article-image { transform: scale(1.06); }
+        .img-fallback-icon { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; font-size: 1.75rem; color: var(--card-border-color); }
+        .img-fallback .img-fallback-icon { display: flex; }
+
+        .article-body { padding: 1.35rem 1.4rem 1.4rem; flex-grow: 1; display: flex; flex-direction: column; position: relative; z-index: 1; }
+        .article-title { font-family: var(--font-sans); font-weight: 700; line-height: 1.27; margin-bottom: 0.55rem; font-size: var(--text-lg); letter-spacing: -0.025em; }
+        .article-title a { color: var(--text-color); text-decoration: none; transition: color var(--duration-fast) var(--ease-standard); }
         .article-card:hover .article-title a { color: var(--primary-color) !important; }
-        .article-meta { display: flex; align-items: center; margin-bottom: 0.8rem; flex-wrap: wrap; gap: 0.4rem 1rem; }
-        .meta-item { display: flex; align-items: center; font-size: 0.8rem; color: var(--text-muted-color); }
-        .meta-item i { font-size: 0.9rem; margin-right: 0.4rem; color: var(--secondary-color); }
-        .article-description { color: var(--text-muted-color); margin-bottom: 1.25rem; font-size: 0.95rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-        .read-more { margin-top: auto; background: var(--primary-color); color: white !important; border: none; padding: 0.6rem 0; border-radius: var(--border-radius-md); font-weight: 600; font-size: 0.9rem; transition: all 0.3s ease; width: 100%; text-align: center; text-decoration: none; display:inline-block; }
-        .read-more:hover { background: var(--primary-dark); transform: translateY(-2px); color: white !important; box-shadow: var(--shadow-md); }
+        .article-meta { display: flex; align-items: center; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.35rem 0.45rem; }
+        .meta-item { display: flex; align-items: center; font-family: var(--font-sans); font-size: 0.66rem; color: var(--text-muted-color); background: var(--light-bg); border: 1px solid var(--card-border-color); padding: 0.22rem 0.6rem; border-radius: var(--border-radius-pill); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; }
+        .meta-item i { font-size: 0.75rem; margin-right: 0.35rem; color: var(--secondary-color); }
+        .article-description { color: var(--text-muted-color); margin-bottom: 1.15rem; font-size: 0.9rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+        .read-more { margin-top: auto; background: var(--text-color); color: var(--card-bg) !important; border: none; padding: 0.62rem 0; border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.84rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); width: 100%; text-align: center; text-decoration: none; display: inline-block; }
+        .read-more:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff !important; box-shadow: var(--shadow-glow); }
+        .read-more:active { transform: scale(0.98); }
+
+        /* Long card grids below the fold: let the browser skip offscreen layout work. */
+        .tab-pane .row.g-4 { content-visibility: auto; contain-intrinsic-size: 1px 900px; }
+
+        /* ==========================================================================
+           PAGINATION
+           ========================================================================== */
         .pagination { flex-wrap: wrap; }
-        .page-item .page-link { border-radius: 50%; width: 40px; height: 40px; display:flex; align-items:center; justify-content:center; color: var(--text-muted-color); background-color: var(--card-bg); border: 1px solid var(--card-border-color); font-weight: 600; transition: all 0.2s ease; font-size:0.9rem; margin: 0 0.2rem;}
-        .page-item.active .page-link { background-color: var(--primary-color); border-color: var(--primary-color); color: white; box-shadow: 0 2px 8px rgba(var(--primary-color-rgb), 0.4); }
-        .page-item.disabled .page-link { color: var(--text-muted-color); pointer-events: none; background-color: var(--light-bg); }
-        .page-link-prev-next .page-link { width: auto; padding-left:1.2rem; padding-right:1.2rem; border-radius:50px; }
-        footer { background: var(--footer-bg); color: var(--footer-text); margin-top: auto; padding: 3.5rem 0 1.5rem; font-size:0.9rem; }
+        .page-item .page-link { border-radius: var(--border-radius-sm); width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; color: var(--text-muted-color); background-color: var(--card-bg); border: 1px solid var(--card-border-color); font-weight: 700; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); font-size: 0.86rem; margin: 0 0.2rem; }
+        .page-item .page-link:hover { border-color: var(--primary-color); color: var(--primary-color); transform: translateY(-2px); }
+        .page-item.active .page-link { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); border-color: transparent; color: #fff; }
+        .page-item.disabled .page-link { color: var(--text-muted-color); pointer-events: none; background-color: var(--light-bg); opacity: 0.55; }
+        .page-link-prev-next .page-link { width: auto; padding-left: 1.1rem; padding-right: 1.1rem; }
+
+        /* ==========================================================================
+           FOOTER
+           ========================================================================== */
+        footer { background: var(--footer-bg); color: var(--footer-text); margin-top: auto; padding: 3.5rem 0 1.5rem; font-size: 0.9rem; position: relative; }
+        footer::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(var(--secondary-color-rgb), 0.55), rgba(var(--primary-color-rgb), 0.55), transparent); }
         .footer-content.row { display: flex; flex-wrap: wrap; }
-        .footer-section h5 { color: white; margin-bottom: 1.2rem; font-weight: 600; letter-spacing: 0.3px; font-size: 1.1rem; }
+        .footer-section h5 { color: #fff; margin-bottom: 1.2rem; font-weight: 700; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.13em; }
         .footer-links { display: flex; flex-direction: column; gap: 0.8rem; }
-        .footer-links a { color: var(--footer-text); text-decoration: none; transition: all 0.2s ease; }
-        .footer-links a:hover { color: var(--footer-link-hover); padding-left: 5px; }
-        .social-links { display: flex; gap: 1rem; margin-top: 0.5rem; }
-        .social-links a { color: var(--footer-text); font-size: 1.2rem; transition: all 0.2s ease; }
-        .social-links a:hover { color: var(--secondary-light); transform: translateY(-2px); }
-        .copyright { text-align: center; padding-top: 2rem; margin-top: 2rem; border-top: 1px solid #374151; font-size: 0.85rem; color: var(--text-muted-color); width: 100%; }
-        .add-article-btn { width: 60px; height: 60px; border-radius: 50%; color: white; border: none; display: flex; align-items: center; justify-content: center; font-size: 24px; cursor: pointer; background-image: linear-gradient(to right, var(--primary-color) 0%, var(--primary-light) 100%); box-shadow: 0 4px 15px rgba(var(--primary-color-rgb), 0.35); transition: all 0.3s ease-out; }
-        .add-article-btn:hover { transform: translateY(-4px) scale(1.05); box-shadow: 0 8px 25px rgba(var(--primary-color-rgb), 0.4); }
-        .page-header-static { background-color: var(--card-bg); border-radius: var(--border-radius-lg); padding: 2.5rem; margin-bottom: 2rem; text-align: center; border-left: 5px solid var(--primary-color); }
-        .page-header-static h1 { color: var(--text-color); font-size: 2.8rem; font-weight: 700; }
-        body.dark-mode .page-header-static h1 { color: var(--primary-light); }
-        .static-content-container { background-color: var(--card-bg); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 5vw, 3rem); font-size: 1.05rem; line-height: 1.8; box-shadow: var(--shadow-md); }
-        .static-content-container h2 { font-family: 'Poppins', sans-serif; color: var(--primary-dark); border-bottom: 2px solid var(--secondary-color); padding-bottom: 0.5rem; margin-top: 2.5rem; margin-bottom: 1.5rem; display: inline-block; }
-        .static-content-container h2 .icon { margin-right: 0.75rem; }
-        .static-content-container p.lead { font-size: 1.25rem; font-weight: 400; color: var(--text-muted-color); }
+        .footer-links a { color: var(--footer-text); text-decoration: none; transition: color var(--duration-base) var(--ease-standard), padding-left var(--duration-base) var(--ease-premium); }
+        .footer-links a:hover { color: var(--footer-link-hover); padding-left: 6px; }
+        .social-links { display: flex; gap: 0.6rem; margin-top: 0.5rem; }
+        .social-links a { color: var(--footer-text); font-size: 1rem; transition: color var(--duration-base) var(--ease-standard), background-color var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-spring); width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: var(--border-radius-sm); background: rgba(255,255,255,0.06); }
+        .social-links a:hover { color: #fff; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); transform: translateY(-3px); }
+        .footer-newsletter-input { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #fff; }
+        .footer-newsletter-input::placeholder { color: rgba(255,255,255,0.5); }
+        .footer-newsletter-input:focus { background: rgba(255,255,255,0.1); border-color: var(--primary-light); box-shadow: 0 0 0 3px rgba(var(--primary-color-rgb), 0.4); color: #fff; }
+        .copyright { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.4rem 1.25rem; text-align: center; padding-top: 2rem; margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.8rem; color: var(--text-muted-color); width: 100%; }
+        .back-to-top-link { color: var(--footer-text); background: none; border: none; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.35rem; transition: color var(--duration-base) var(--ease-standard); }
+        .back-to-top-link:hover { color: var(--secondary-light); }
+
+        /* ==========================================================================
+           MODALS
+           ========================================================================== */
+        .modal-content { border-radius: var(--border-radius-lg); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); box-shadow: var(--shadow-lg); }
+        body.dark-mode .modal-header .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
+        .admin-controls { position: fixed; bottom: 25px; right: 25px; z-index: 1030; }
+        .add-article-btn { width: 56px; height: 56px; border-radius: var(--border-radius-md); color: #fff; border: none; display: flex; align-items: center; justify-content: center; font-size: 20px; cursor: pointer; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); box-shadow: var(--shadow-lg); transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-spring), filter var(--duration-base) var(--ease-standard); }
+        .add-article-btn:hover { filter: brightness(1.08); transform: translateY(-4px) scale(1.04); box-shadow: var(--shadow-glow); }
+        .add-article-btn:active { transform: translateY(-1px) scale(0.96); }
+
+        /* ==========================================================================
+           STATIC PAGES
+           ========================================================================== */
+        .page-header-static { background-color: var(--card-bg); background-image: var(--surface-gradient); border-radius: var(--border-radius-lg); padding: clamp(2rem, 5vw, 3.25rem); margin-bottom: 2rem; text-align: center; border: 1px solid var(--card-border-color); position: relative; overflow: hidden; }
+        .page-header-static::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background-image: linear-gradient(90deg, var(--primary-color), var(--secondary-color)); }
+        .page-header-static h1 { color: var(--text-color); font-size: var(--text-4xl); margin: 0; }
+        .static-content-container { background-color: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 5vw, 3rem); font-size: 1.03rem; line-height: 1.8; box-shadow: var(--shadow-sm); }
+        .static-content-container h2 { font-family: var(--font-sans); font-weight: 700; color: var(--text-color); border-bottom: 2px solid var(--secondary-color); padding-bottom: 0.5rem; margin-top: 2.5rem; margin-bottom: 1.5rem; display: inline-block; font-size: var(--text-xl); }
+        .static-content-container h2 .icon { margin-right: 0.75rem; color: var(--primary-color); }
+        .static-content-container p, .static-content-container li { max-width: 68ch; }
+        .static-content-container p.lead { font-family: var(--font-display); font-weight: 400; font-size: 1.4rem; line-height: 1.4; color: var(--text-color); max-width: 40ch; }
         .static-content-container ul { padding-left: 25px; }
         .static-content-container li { margin-bottom: 0.5rem; }
-        .contact-card { background-color: var(--light-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); padding: 1.5rem; height: 100%; text-align: center; transition: all 0.3s ease; }
-        .contact-card:hover { transform: translateY(-5px); box-shadow: var(--shadow-md); }
-        .contact-card .icon { font-size: 2.5rem; color: var(--primary-color); margin-bottom: 1rem; }
+        .contact-card { background-color: var(--light-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); padding: 1.75rem 1.5rem; height: 100%; text-align: center; transition: transform var(--duration-base) var(--ease-premium), box-shadow var(--duration-base) var(--ease-premium), border-color var(--duration-base) var(--ease-standard); }
+        .contact-card:hover { transform: translateY(-5px); box-shadow: var(--shadow-md); border-color: rgba(var(--primary-color-rgb), 0.35); }
+        .contact-card .icon { font-size: 2.25rem; color: var(--primary-color); margin-bottom: 1rem; }
         body.dark-mode .contact-card { background-color: var(--card-bg); }
         .contact-social-links { display: flex; gap: 1.5rem; justify-content: center; font-size: 1.5rem; }
-        .contact-social-links a { color: var(--text-muted-color); transition: all 0.3s ease; }
-        .contact-social-links a:hover { color: var(--secondary-color); transform: scale(1.1); }
-        .auth-card { max-width: 480px; margin: 3rem auto; background: var(--card-bg); border-radius: var(--border-radius-lg); box-shadow: var(--shadow-lg); border: 1px solid var(--card-border-color); overflow: hidden; }
-        .auth-header { padding: 2rem; background-color: var(--primary-color); text-align: center; }
-        .auth-header .icon { font-size: 2.5rem; color: var(--secondary-light); }
-        .auth-header h2 { color: white; font-weight: 600; margin-top: 0.75rem; margin-bottom: 0; }
-        .auth-body { padding: 2rem 2.5rem; }
+        .contact-social-links a { color: var(--text-muted-color); transition: color var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-spring); }
+        .contact-social-links a:hover { color: var(--secondary-color); transform: translateY(-3px) scale(1.1); }
+
+        /* ==========================================================================
+           AUTH
+           ========================================================================== */
+        .auth-card { max-width: 440px; margin: 3rem auto; background: var(--card-bg); border-radius: var(--border-radius-lg); box-shadow: var(--shadow-lg); border: 1px solid var(--card-border-color); overflow: hidden; }
+        .auth-header { padding: 2.25rem 2rem 2rem; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-dark)); text-align: center; }
+        .auth-header .icon { font-size: 2rem; color: #fff; width: 64px; height: 64px; margin: 0 auto; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.16); border-radius: 50%; }
+        .auth-header h1 { font-size: var(--text-2xl); color: #fff; margin-top: 1rem; margin-bottom: 0; }
+        .auth-body { padding: 2rem 2.25rem; }
         .input-group-icon { position: relative; }
         .input-group-icon .form-control { padding-left: 2.5rem; }
-        .input-group-icon .input-icon { position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); color: var(--text-muted-color); }
-        .auth-body .btn { padding: 0.75rem; font-weight: 600; font-size: 1rem; }
-        .profile-header-card { background: var(--card-bg); border-radius: var(--border-radius-lg); padding: 2rem; box-shadow: var(--shadow-md); display: flex; flex-direction: column; align-items: center; text-align: center; }
-        .profile-avatar-wrapper { position: relative; margin-bottom: 1rem; }
-        .profile-avatar { width: 120px; height: 120px; border-radius: 50%; background-image: linear-gradient(to top, var(--primary-color), var(--primary-light)); color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 3.5rem; font-family: 'Poppins', sans-serif; border: 5px solid var(--card-bg); box-shadow: var(--shadow-md); }
-        .profile-header-card h2 { margin-bottom: 0.25rem; font-size: 2rem; }
-        .profile-header-card .username { color: var(--text-muted-color); font-weight: 500; margin-bottom: 1rem; }
-        .profile-stats { display: flex; gap: 2rem; margin-top: 1.5rem; border-top: 1px solid var(--card-border-color); padding-top: 1.5rem; width: 100%; justify-content: center; }
-        .stat-item { text-align: center; }
-        .stat-item .icon { font-size: 1.5rem; color: var(--secondary-color); margin-bottom: 0.5rem; }
-        .stat-item .count { font-size: 1.25rem; font-weight: 700; color: var(--text-color); }
-        .stat-item .label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted-color); }
+        .input-group-icon .input-icon { position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: var(--text-muted-color); transition: color var(--duration-base) var(--ease-standard); }
+        .input-group-icon:focus-within .input-icon { color: var(--primary-color); }
+        .auth-body .btn { padding: 0.75rem; font-weight: 700; font-size: 1rem; }
+        .auth-footer { padding: 1.25rem 2.25rem; text-align: center; border-top: 1px solid var(--card-border-color); background: var(--light-bg); }
+
+        /* ==========================================================================
+           PROFILE
+           ========================================================================== */
+        .profile-header-card { background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: 2rem; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; align-items: center; text-align: center; position: relative; overflow: hidden; }
+        .profile-header-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 96px; background-image: linear-gradient(135deg, rgba(var(--primary-color-rgb), 0.16), rgba(var(--secondary-color-rgb), 0.10)); }
+        .profile-avatar-wrapper { position: relative; margin-bottom: 1rem; z-index: 1; }
+        .profile-avatar { width: 116px; height: 116px; border-radius: 50%; background-image: linear-gradient(150deg, var(--primary-light), var(--primary-dark)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 3.2rem; font-family: var(--font-sans); border: 5px solid var(--card-bg); box-shadow: var(--shadow-md); }
+        .profile-header-card h1 { margin-bottom: 0.25rem; font-size: var(--text-3xl); position: relative; z-index: 1; }
+        .profile-header-card .username { color: var(--text-muted-color); font-weight: 600; margin-bottom: 1rem; }
+        .profile-stats { display: flex; gap: 1.5rem; margin-top: 1.5rem; border-top: 1px solid var(--card-border-color); padding-top: 1.5rem; width: 100%; justify-content: center; }
+        .stat-item { text-align: center; background: none; border: none; padding: 0.4rem 1rem; border-radius: var(--border-radius-md); transition: background-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
+        button.stat-item { cursor: pointer; }
+        button.stat-item:hover { background-color: var(--light-bg); transform: translateY(-2px); }
+        .stat-item .icon { font-size: 1.4rem; color: var(--secondary-color); margin-bottom: 0.5rem; }
+        .stat-item .count { font-size: 1.3rem; font-weight: 800; color: var(--text-color); letter-spacing: -0.03em; }
+        .stat-item .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; color: var(--text-muted-color); }
         .profile-tabs .nav-link { padding: 0.75rem 1rem; }
-        .empty-state-card { background-color: var(--card-bg); border-radius: var(--border-radius-lg); text-align: center; padding: 3rem; border: 2px dashed var(--card-border-color); }
-        .empty-state-card .icon { font-size: 3.5rem; color: var(--text-muted-color); opacity: 0.5; margin-bottom: 1rem; }
-        .admin-controls { position: fixed; bottom: 25px; right: 25px; z-index: 1030; }
-        .bookmark-btn { background: none; border: none; font-size: 1.6rem; color: var(--text-muted-color); cursor: pointer; padding: 0.25rem 0.5rem; transition: all 0.2s ease; vertical-align: middle; }
+
+        /* ==========================================================================
+           EMPTY / ERROR STATES
+           ========================================================================== */
+        .state-card { background-color: var(--card-bg); background-image: var(--surface-gradient); border-radius: var(--border-radius-lg); text-align: center; padding: clamp(2.25rem, 6vw, 3.5rem) 2rem; border: 1px dashed var(--card-border-color); }
+        .state-card.state-card-narrow { max-width: 600px; margin-left: auto; margin-right: auto; }
+        .state-card.state-card-solid { border-style: solid; box-shadow: var(--shadow-sm); }
+        .state-card-icon { width: 72px; height: 72px; border-radius: 50%; background-image: linear-gradient(140deg, rgba(var(--primary-color-rgb), 0.16), rgba(var(--secondary-color-rgb), 0.10)); color: var(--primary-color); display: inline-flex; align-items: center; justify-content: center; font-size: 1.6rem; margin-bottom: 1.25rem; }
+        .state-card-icon.state-card-icon-sm { width: 52px; height: 52px; font-size: 1.1rem; margin-bottom: 0.85rem; }
+        .state-card.state-card-danger .state-card-icon { background-image: linear-gradient(140deg, rgba(220, 38, 38, 0.18), rgba(220, 38, 38, 0.08)); color: #DC2626; }
+        .state-card-title { font-size: var(--text-2xl); margin-bottom: 0.5rem; }
+        .state-card-text { color: var(--text-muted-color); max-width: 46ch; margin: 0 auto; }
+        .state-card-actions { margin-top: 1.5rem; display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+
+        /* ==========================================================================
+           BOOKMARK
+           ========================================================================== */
+        .bookmark-btn { background: none; border: none; font-size: 1.5rem; color: var(--text-muted-color); cursor: pointer; padding: 0.25rem 0.5rem; transition: color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); vertical-align: middle; border-radius: 50%; }
         .bookmark-btn.active { color: var(--bookmark-active-color); transform: scale(1.1); }
-        .bookmark-btn:hover { color: var(--secondary-light); }
-        .article-card .bookmark-btn { font-size: 1.3rem; }
-        .bookmark-btn:focus { outline: none; box-shadow: none; }
-        
-        /* === COMMENT SECTION STYLES (IMPROVED) === */
-        .comment-section h3 { padding-bottom: 0.75rem; border-bottom: 1px solid var(--card-border-color); }
+        .bookmark-btn:hover { color: var(--secondary-light); transform: scale(1.12); }
+        .article-card .bookmark-btn { font-size: 1.2rem; position: relative; z-index: 2; }
+
+        /* ==========================================================================
+           AI SUMMARY / TAKEAWAYS / SKELETON
+           ========================================================================== */
+        .summary-box, .takeaways-box { background-color: var(--card-bg); background-image: var(--surface-gradient); border: 1px solid rgba(var(--primary-color-rgb), 0.16); border-radius: var(--border-radius-md); margin: 1.6rem 0; padding: 1.5rem 1.65rem; }
+        .summary-box h2, .takeaways-box h2 { font-family: var(--font-sans); font-weight: 800; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--primary-color); margin-bottom: 0.75rem; }
+        .summary-box p { font-size: 1.12rem; line-height: 1.6; max-width: 62ch; margin: 0; }
+        .takeaways-box { border-left: 3px solid var(--secondary-color); }
+        .takeaways-box h2 { color: var(--secondary-color); }
+        .takeaways-box ul { margin: 0; padding-left: 1.15rem; }
+        .takeaways-box li { margin-bottom: 0.45rem; }
+        .takeaways-box li:last-child { margin-bottom: 0; }
+        .content-text { white-space: pre-wrap; line-height: 1.8; font-size: 1.07rem; color: var(--text-color); max-width: 70ch; }
+        .content-divider-heading { font-size: var(--text-xl); margin: 0 0 1rem; }
+        .comment-login-prompt { text-align: center; margin-top: 1.5rem; padding: 1.75rem; background: var(--light-bg); border-radius: var(--border-radius-md); border: 1px solid var(--card-border-color); }
+        .comment-login-prompt i { font-size: 1.5rem; color: var(--text-muted-color); margin-bottom: 0.5rem; display: block; }
+
+        .ai-skeleton-box { border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); padding: 1.25rem 1.4rem; margin-bottom: 1.25rem; }
+        .ai-skeleton-label { height: 0.72rem; width: 120px; border-radius: var(--border-radius-xs); margin-bottom: 0.7rem; }
+        .ai-skeleton-line { height: 0.82rem; border-radius: var(--border-radius-xs); margin-bottom: 0.6rem; }
+        .ai-skeleton-line:last-child { margin-bottom: 0; }
+        .ai-skeleton-line.w-100 { width: 100%; } .ai-skeleton-line.w-95 { width: 95%; } .ai-skeleton-line.w-90 { width: 90%; } .ai-skeleton-line.w-80 { width: 80%; } .ai-skeleton-line.w-70 { width: 70%; }
+        .ai-skeleton-label, .ai-skeleton-line { background: linear-gradient(100deg, var(--skeleton-base) 30%, var(--skeleton-sheen) 50%, var(--skeleton-base) 70%); background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
+        .ai-skeleton-caption { color: var(--text-muted-color); font-size: var(--text-sm); text-align: center; margin: 0.25rem 0 0; }
+        .ai-skeleton-caption i { color: var(--primary-color); }
+
+        .hero-image-wrap { position: relative; overflow: hidden; border-radius: var(--border-radius-md); box-shadow: var(--shadow-md); margin: 1.25rem 0; aspect-ratio: 16 / 8; max-height: 460px; background: var(--skeleton-base); background-image: linear-gradient(100deg, var(--skeleton-base) 30%, var(--skeleton-sheen) 50%, var(--skeleton-base) 70%); background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
+        .hero-image-wrap.is-loaded, .hero-image-wrap.img-fallback { animation: none; background-image: none; }
+        .hero-image-wrap.img-fallback { background: var(--light-bg); }
+        .hero-image-wrap .hero-image { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity var(--duration-slow) var(--ease-standard); }
+        .hero-image-wrap .hero-image.is-loaded { opacity: 1; }
+        .hero-image-wrap.img-fallback .hero-image { display: none; }
+        .hero-image-wrap .img-fallback-icon { font-size: 2.25rem; }
+        .article-full-content-wrapper { padding: clamp(1.25rem, 4vw, 3rem); margin: 1rem auto 2rem; max-width: 860px; box-shadow: var(--shadow-md); }
+        .article-title-main { font-size: clamp(2.1rem, 5vw, 3.1rem); color: var(--text-color); margin-bottom: 0.75rem; }
+        .article-meta-detailed .meta-item { font-size: 0.68rem; }
+
+        /* ==========================================================================
+           COMMENTS
+           ========================================================================== */
+        .comment-section h2 { padding-bottom: 0.75rem; border-bottom: 1px solid var(--card-border-color); font-size: var(--text-xl); }
+        .comment-form-heading { font-size: var(--text-lg); font-weight: 700; margin-bottom: 1rem; }
         .comment-thread { position: relative; }
         #comments-list > .comment-thread + .comment-thread { margin-top: 1.75rem; padding-top: 1.75rem; border-top: 1px solid var(--card-border-color); }
         .comment-container { display: flex; gap: 1rem; align-items: flex-start; }
         .comment-replies { margin-left: 3.5rem; padding-left: 1.25rem; margin-top: 1.25rem; border-left: 2px solid var(--card-border-color); }
+        .comment-replies.comment-replies-flat { margin-left: 1.5rem; padding-left: 1rem; }
+        .comment-replies:empty { display: none; margin: 0; padding: 0; border: 0; }
         .comment-replies > .comment-thread + .comment-thread { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px dashed var(--card-border-color); }
-        .comment-avatar { width: 45px; height: 45px; border-radius: 50%; background: var(--primary-light); color: white; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
-        .comment-replies .comment-avatar { width: 40px; height: 40px; }
-        .comment-body { flex-grow: 1; }
+        .comment-avatar { width: 44px; height: 44px; border-radius: 50%; background-image: linear-gradient(140deg, var(--primary-light), var(--primary-dark)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; flex-shrink: 0; box-shadow: var(--shadow-sm); }
+        .comment-replies .comment-avatar { width: 38px; height: 38px; font-size: 0.9rem; }
+        .comment-body { flex-grow: 1; min-width: 0; }
         .comment-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.25rem; }
-        .comment-author { font-weight: 600; }
-        .comment-date { font-size: 0.8rem; color: var(--text-muted-color); }
+        .comment-author { font-weight: 700; color: var(--text-color); }
+        .comment-date { font-size: 0.78rem; color: var(--text-muted-color); }
         .comment-content { word-wrap: break-word; }
-        .comment-actions { position: relative; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
-        .comment-actions button { background: none; border: none; color: var(--text-muted-color); padding: 0.25rem 0.5rem; border-radius: var(--border-radius-md); font-size: 0.85rem; font-weight: 500; display: flex; align-items: center; gap: 0.3rem; transition: all 0.2s ease; }
+        .comment-actions { position: relative; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; }
+        .comment-actions button { background: none; border: none; color: var(--text-muted-color); padding: 0.28rem 0.6rem; border-radius: var(--border-radius-pill); font-size: 0.82rem; font-weight: 600; display: flex; align-items: center; gap: 0.3rem; transition: color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }
         .comment-actions button:hover { color: var(--primary-color); background-color: rgba(var(--primary-color-rgb), 0.1); }
         .react-btn { position: relative; }
-        .reaction-box { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 8px; background-color: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: 50px; padding: 4px 8px; box-shadow: var(--shadow-md); z-index: 10; white-space: nowrap; animation: fadeInUp 0.2s ease-out; }
-        @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .reaction-box.show { display: flex; gap: 5px; }
-        .reaction-emoji { font-size: 1.4rem; cursor: pointer; transition: transform 0.15s cubic-bezier(0.215, 0.610, 0.355, 1); padding: 2px; }
-        .reaction-emoji:hover { transform: scale(1.25); }
+        .reaction-box { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 8px; background-color: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-pill); padding: 4px 8px; box-shadow: var(--shadow-lg); z-index: 10; white-space: nowrap; animation: fadeInUp 0.22s var(--ease-spring); }
+        .reaction-box.show { display: flex; gap: 2px; }
+        .reaction-emoji { font-size: 1.3rem; cursor: pointer; transition: transform 0.18s var(--ease-spring), background-color var(--duration-fast) var(--ease-standard); padding: 4px; background: none; border: none; border-radius: 50%; line-height: 1; }
+        .reaction-emoji:hover { transform: scale(1.3) translateY(-2px); }
+        .reaction-emoji.is-selected { background-color: rgba(var(--primary-color-rgb), 0.16); box-shadow: inset 0 0 0 1.5px rgba(var(--primary-color-rgb), 0.5); }
         .reaction-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-        .reaction-pill { display: flex; align-items: center; background-color: rgba(var(--primary-color-rgb), 0.08); border: 1px solid transparent; border-radius: 20px; padding: 2px 8px; font-size: 0.8rem; font-weight: 500; cursor: default; transition: all 0.2s ease; }
-        .reaction-pill.user-reacted { background-color: var(--primary-color); color: white; border-color: var(--primary-dark); }
+        .reaction-pill { display: flex; align-items: center; background-color: rgba(var(--primary-color-rgb), 0.08); border: 1px solid transparent; border-radius: var(--border-radius-pill); padding: 2px 9px; font-size: 0.78rem; font-weight: 600; cursor: default; transition: background-color var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard); }
+        .reaction-pill.user-reacted { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; }
         .reaction-pill .emoji { font-size: 0.9rem; margin-right: 4px; }
-        .reply-form-container { padding: 1rem; border-radius: var(--border-radius-md); margin-top: 0.75rem; background-color: var(--light-bg); border: 1px solid var(--card-border-color); }
-        
-        /* === FEATURED STORY & AI CARD SECTION === */
-        .featured-story { display: flex; } /* Ensure it's visible by default */
-        .ai-synthesis-card { display: block; } /* Ensure it's visible by default */
-        .featured-story {
-            background-color: var(--card-bg);
-            border-radius: var(--border-radius-lg);
-            box-shadow: var(--shadow-lg);
-            margin-bottom: 2.5rem;
-            overflow: hidden;
-            border: 1px solid var(--card-border-color);
-        }
-        .featured-story-image {
-            flex: 0 0 55%;
-            background-size: cover;
-            background-position: center;
-            min-height: 450px;
-        }
-        .featured-story-content {
-            flex: 0 0 45%;
-            padding: 2.5rem;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        }
-        .featured-story-content .meta-item {
-            font-size: 0.9rem;
-        }
-        .featured-story-content h2 {
-            font-size: 2.2rem;
-            line-height: 1.3;
-            margin: 1rem 0;
-        }
-        .featured-story-content h2 a {
-            color: var(--text-color);
-            text-decoration: none;
-            transition: color 0.2s ease;
-        }
-        .featured-story-content h2 a:hover {
-            color: var(--primary-color);
-        }
-        .featured-story-content .description {
-            font-size: 1.05rem;
-            color: var(--text-muted-color);
-            margin-bottom: 2rem;
-        }
-        .featured-story-content .read-more-btn {
-            background-color: var(--primary-color);
-            color: white;
-            padding: 0.8rem 1.5rem;
-            text-decoration: none;
-            border-radius: 50px;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            align-self: flex-start;
-        }
-        .featured-story-content .read-more-btn:hover {
-            background-color: var(--primary-dark);
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-md);
-        }
-        .ai-synthesis-card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border-color);
-            border-radius: var(--border-radius-lg);
-            padding: 2rem;
-            margin-bottom: 2.5rem;
-            box-shadow: var(--shadow-lg);
-            position: relative;
-            overflow: hidden;
-        }
-        .ai-synthesis-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-image: linear-gradient(135deg, rgba(var(--primary-color-rgb), 0.05) 25%, transparent 25%),
-                              linear-gradient(225deg, rgba(var(--primary-color-rgb), 0.05) 25%, transparent 25%);
-            background-size: 20px 20px;
-            opacity: 0.5;
-        }
-        .synthesis-header {
-            text-align: center;
-            margin-bottom: 1.5rem;
-            position: relative;
-        }
-        .synthesis-header i {
-            font-size: 2rem;
-            color: var(--primary-color);
-        }
-        .synthesis-header h2 {
-            font-size: 1.5rem;
-            margin-top: 0.5rem;
-        }
-        .synthesis-text {
-            font-size: 1.15rem;
-            line-height: 1.7;
-            text-align: center;
-            color: var(--text-color);
-            position: relative;
-            font-family: 'Inter', serif;
-        }
-        .synthesis-keywords {
-            margin-top: 2rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--card-border-color);
-            text-align: center;
-            position: relative;
-        }
-        .synthesis-keywords .keyword-tag {
-            display: inline-block;
-            background-color: var(--light-bg);
-            border: 1px solid var(--card-border-color);
-            color: var(--text-muted-color);
-            padding: 0.4rem 1rem;
-            border-radius: 50px;
-            margin: 0.25rem;
-            font-size: 0.9rem;
-            font-weight: 500;
-            text-decoration: none;
-            transition: all 0.2s ease-in-out;
-        }
-        .synthesis-keywords .keyword-tag:hover {
-            background-color: var(--primary-color);
-            color: white;
-            border-color: var(--primary-color);
-            transform: translateY(-2px);
-        }
+        .reply-form-container, .edit-form-container { padding: 1rem; border-radius: var(--border-radius-md); margin-top: 0.75rem; background-color: var(--light-bg); border: 1px solid var(--card-border-color); display: none; }
 
-        /*
-        ==========================================================================
-        === MOBILE RESPONSIVE STYLES ===
-        ==========================================================================
-        */
+        /* ==========================================================================
+           COMMUNITY HUB + LIST HEADERS
+           ========================================================================== */
+        .community-hub-header { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; background-color: var(--card-bg); background-image: linear-gradient(135deg, rgba(var(--primary-color-rgb),0.09), rgba(var(--secondary-color-rgb),0.06)); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 2rem; }
+        .community-hub-header-text { max-width: 640px; }
+        .community-hub-header h1 { font-family: var(--font-display); font-weight: 400; font-size: var(--text-3xl); margin: 0.4rem 0 0.6rem; }
+        .community-hub-sub { color: var(--text-muted-color); margin: 0; max-width: 58ch; }
+        .community-hub-cta { flex-shrink: 0; white-space: nowrap; }
+        .list-page-header { margin-bottom: 1.75rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--card-border-color); }
+        .list-page-header .eyebrow { display: block; margin-bottom: 0.45rem; }
+        .list-page-header h1 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: var(--text-3xl); }
+
+        /* ==========================================================================
+           FEATURED STORY (parallax layer) + AI SYNTHESIS
+           ========================================================================== */
+        .featured-story { display: flex; background-color: var(--card-bg); border-radius: var(--border-radius-lg); box-shadow: var(--shadow-lg); margin-bottom: 2rem; overflow: hidden; border: 1px solid var(--card-border-color); position: relative; }
+        .featured-story-image { flex: 0 0 55%; background-size: cover; background-position: center; background-color: var(--skeleton-base); min-height: 440px; position: relative; will-change: transform; transform: translate3d(0, var(--parallax-y, 0px), 0) scale(1.08); transition: transform 80ms linear; }
+        .featured-story-image::after { content: ''; position: absolute; inset: 0; background: linear-gradient(100deg, rgba(0,0,0,0) 55%, rgba(var(--card-bg-rgb), 0.35) 100%); }
+        .featured-story-content { flex: 0 0 45%; padding: clamp(1.5rem, 4vw, 3rem); display: flex; flex-direction: column; justify-content: center; position: relative; }
+        .featured-story-content .meta-item:first-child { background-image: linear-gradient(135deg, rgba(var(--accent-color-rgb), 0.2), rgba(var(--accent-color-rgb), 0.1)); color: var(--accent-color); border-color: transparent; font-weight: 700; }
+        .featured-story-content .meta-item:first-child i { color: var(--accent-color); }
+        .featured-story-content h2 { font-size: var(--text-3xl); margin: 1rem 0; }
+        .featured-story-content h2 a { color: var(--text-color); text-decoration: none; transition: color var(--duration-base) var(--ease-standard); }
+        .featured-story-content h2 a:hover { color: var(--primary-color); }
+        .featured-story-content .description { font-size: 1.02rem; color: var(--text-muted-color); margin-bottom: 2rem; }
+        .featured-story-content .read-more-btn { background: var(--text-color); color: var(--card-bg); padding: 0.8rem 1.6rem; text-decoration: none; border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.9rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); align-self: flex-start; }
+        .featured-story-content .read-more-btn:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; box-shadow: var(--shadow-glow); transform: translateY(-2px); }
+
+        .ai-synthesis-card { background-color: var(--card-bg); background-image: var(--surface-gradient); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 2rem; box-shadow: var(--shadow-sm); position: relative; overflow: hidden; }
+        .ai-synthesis-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background-image: linear-gradient(180deg, var(--primary-color), var(--secondary-color)); }
+        .synthesis-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.1rem; }
+        .synthesis-header i { font-size: 0.95rem; color: #fff; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--border-radius-sm); flex-shrink: 0; }
+        .synthesis-header h2 { font-size: 0.72rem; margin: 0; font-weight: 800; text-transform: uppercase; letter-spacing: 0.13em; color: var(--text-muted-color); }
+        .synthesis-text { font-size: clamp(1.35rem, 2.6vw, 1.75rem); line-height: 1.35; text-align: left; color: var(--text-color); position: relative; max-width: 40ch; margin: 0; }
+        .synthesis-keywords { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--card-border-color); text-align: left; position: relative; }
+        .synthesis-keywords .keyword-tag { display: inline-block; background-color: var(--light-bg); border: 1px solid var(--card-border-color); color: var(--text-color); padding: 0.35rem 0.95rem; border-radius: var(--border-radius-pill); margin: 0.2rem 0.3rem 0.2rem 0; font-size: 0.78rem; font-weight: 600; text-decoration: none; transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
+        .synthesis-keywords .keyword-tag:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; transform: translateY(-2px); }
+
+        /* ==========================================================================
+           RESPONSIVE
+           ========================================================================== */
         @media (max-width: 991.98px) {
-            .featured-story {
-                flex-direction: column;
-            }
-            .featured-story-image {
-                flex-basis: auto;
-                width: 100%;
-                min-height: 300px;
-            }
-            .featured-story-content {
-                flex-basis: auto;
-                padding: 2rem;
-            }
-            .featured-story-content h2 {
-                font-size: 2rem;
-            }
+            .featured-story { flex-direction: column; }
+            .featured-story-image { flex-basis: auto; width: 100%; min-height: 300px; transform: none; }
+            .featured-story-content { flex-basis: auto; }
         }
         @media (max-width: 767.98px) {
-            .navbar-center {
-                display: none;
-            }
-            .navbar-left {
-                flex-grow: 1;
-            }
-            .page-header-static h1 {
-                font-size: 2.2rem;
-            }
-            .featured-story-image {
-                min-height: 220px;
-            }
-            .featured-story-content {
-                padding: 1.5rem;
-            }
-            .featured-story-content h2 {
-                font-size: 1.6rem;
-            }
-            .footer-section {
-                text-align: center;
-            }
-            .footer-links {
-                align-items: center;
-            }
-            .social-links {
-                justify-content: center;
-            }
-            .footer-links a:hover {
-                padding-left: 0;
-            }
+            .navbar-center { display: none; }
+            .navbar-left { flex-grow: 1; }
+            .featured-story-image { min-height: 220px; }
+            .community-hub-cta, .community-hub-cta .btn { width: 100%; }
+            .footer-section { text-align: center; }
+            .footer-links { align-items: center; }
+            .social-links { justify-content: center; }
+            .footer-links a:hover { padding-left: 0; }
+            .copyright { flex-direction: column; gap: 0.5rem; }
         }
         @media (max-width: 575.98px) {
-            body {
-                font-size: 0.95rem;
-            }
-            .navbar-brand-custom {
-                font-size: 1.5rem;
-            }
-            .navbar-brand-custom .brand-icon {
-                font-size: 1.6rem;
-            }
-            .comment-replies {
-                margin-left: 1.25rem;
-                padding-left: 1rem;
-            }
-            .comment-container {
-                gap: 0.75rem;
-            }
-            .comment-avatar {
-                width: 40px;
-                height: 40px;
-            }
-            .comment-replies .comment-avatar {
-                width: 35px;
-                height: 35px;
-            }
-            .profile-avatar {
-                width: 100px;
-                height: 100px;
-                font-size: 3rem;
-            }
-            .profile-header-card h2 {
-                font-size: 1.5rem;
-            }
-            .profile-stats {
-                gap: 1rem;
-                flex-wrap: wrap;
-            }
-            .auth-card {
-                margin: 1rem auto;
-                border: none;
-                box-shadow: none;
-            }
-            .ai-synthesis-card, .auth-body, .static-content-container,
-            .profile-header-card, .article-body, .article-full-content-wrapper {
-                padding: 1.5rem;
-            }
-            .article-full-content-wrapper {
-                padding: 1.5rem 1rem;
-            }
-            .synthesis-text {
-                font-size: 1.05rem;
-            }
+            body { font-size: 0.95rem; padding-top: 76px; }
+            .navbar-brand-custom { font-size: 1.3rem; }
+            .comment-replies { margin-left: 1.25rem; padding-left: 1rem; }
+            .comment-replies.comment-replies-flat { margin-left: 0.85rem; padding-left: 0.75rem; }
+            .comment-container { gap: 0.75rem; }
+            .comment-avatar { width: 38px; height: 38px; }
+            .comment-replies .comment-avatar { width: 33px; height: 33px; }
+            .profile-avatar { width: 96px; height: 96px; font-size: 2.7rem; }
+            .profile-stats { gap: 0.5rem; flex-wrap: wrap; }
+            .auth-card { margin: 1rem auto; border: none; box-shadow: none; }
+            .auth-body, .article-body { padding: 1.4rem; }
+            #alert-placeholder { top: 84px; width: 94vw; }
         }
     </style>
     {% block head_extra %}{% endblock %}
-    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6975904325280886" crossorigin="anonymous"></script>
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-CV5LWJ7NQ7"></script>
-    <script>
-        window.dataLayer = window.dataLayer || [];
-        function gtag(){dataLayer.push(arguments);}
-        gtag('js', new Date());
-        gtag('config', 'G-CV5LWJ7NQ7');
-    </script>
 </head>
 <body class="{{ request.cookies.get('darkMode', 'disabled') }}{% block body_class %}{% endblock %}">
-    
+
+    <a class="visually-hidden-focusable" href="#main-content">Skip to main content</a>
+
     <header>
-        <nav class="navbar-main">
+        <nav class="navbar-main" id="mainNavbar">
             <div class="container">
                 <div class="navbar-content-wrapper">
                     <div class="navbar-left">
                         <a class="navbar-brand-custom" href="{{ url_for('index') }}">
-                            <i class="fas fa-bolt-lightning brand-icon"></i>
+                            <i class="fas fa-bolt-lightning brand-icon" aria-hidden="true"></i>
                             <span>BrieflyAI</span>
                         </a>
                     </div>
                     <div class="navbar-center">
-                        <form action="{{ url_for('search_results') }}" method="GET" class="search-container">
-                            <input type="search" name="query" class="form-control navbar-search" placeholder="Search news articles..." value="{{ request.args.get('query', '') }}">
-                            <i class="fas fa-search search-icon"></i>
+                        <form action="{{ url_for('search_results') }}" method="GET" class="search-container" id="navbarSearchForm">
+                            <label for="navbarSearchInput" class="visually-hidden">Search news articles</label>
+                            <input type="search" name="query" id="navbarSearchInput" class="form-control navbar-search" placeholder="Search news articles..." value="{{ request.args.get('query', '') }}" autocomplete="off">
+                            <i class="fas fa-search search-icon" aria-hidden="true"></i>
+                            <button type="button" class="search-clear-btn" aria-label="Clear search"><i class="fas fa-xmark" aria-hidden="true"></i></button>
                         </form>
                     </div>
                     <div class="navbar-right">
                         <div class="header-controls">
-                            <button class="header-btn" type="button" data-bs-toggle="offcanvas" data-bs-target="#mainOffcanvas" aria-controls="mainOffcanvas">
-                                <i class="fas fa-bars"></i>
+                            <button class="header-btn" type="button" data-bs-toggle="offcanvas" data-bs-target="#mainOffcanvas" aria-controls="mainOffcanvas" aria-label="Open menu">
+                                <i class="fas fa-bars" aria-hidden="true"></i>
                                 <span class="d-none d-sm-inline ms-1">Menu</span>
                             </button>
                         </div>
@@ -2013,37 +2166,46 @@ BASE_HTML_TEMPLATE = """
 
     <div class="offcanvas offcanvas-end" tabindex="-1" id="mainOffcanvas" aria-labelledby="mainOffcanvasLabel">
         <div class="offcanvas-header">
-            <h5 class="offcanvas-title" id="mainOffcanvasLabel">BrieflyAI Menu</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+            <h2 class="offcanvas-title h5" id="mainOffcanvasLabel">BrieflyAI Menu</h2>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close menu"></button>
         </div>
         <div class="offcanvas-body d-flex flex-column">
+
+            <div class="sidebar-section d-md-none">
+                <h6 class="sidebar-heading">Search</h6>
+                <form action="{{ url_for('search_results') }}" method="GET" class="search-container offcanvas-search">
+                    <label for="offcanvasSearchInput" class="visually-hidden">Search news articles</label>
+                    <input type="search" name="query" id="offcanvasSearchInput" class="form-control navbar-search" placeholder="Search news articles..." value="{{ request.args.get('query', '') }}" autocomplete="off">
+                    <i class="fas fa-search search-icon" aria-hidden="true"></i>
+                </form>
+            </div>
 
             <div class="sidebar-section">
                 {% if session.user_id %}
                     <div class="dropdown">
                         <a href="#" class="sidebar-btn dropdown-toggle" id="offcanvasUserDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                            <div class="sidebar-avatar">{{ session.user_name[0]|upper }}</div>
+                            <div class="sidebar-avatar" aria-hidden="true">{{ session.user_name[0]|upper }}</div>
                             <strong class="ms-3">{{ session.user_name|truncate(20) }}</strong>
                         </a>
                         <ul class="dropdown-menu shadow" aria-labelledby="offcanvasUserDropdown">
-                            <li><a class="dropdown-item" href="{{ url_for('profile') }}"><i class="fas fa-id-card fa-fw me-2"></i>Profile</a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('profile') }}"><i class="fas fa-id-card fa-fw me-2" aria-hidden="true"></i>Profile</a></li>
                             <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt fa-fw me-2"></i>Logout</a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt fa-fw me-2" aria-hidden="true"></i>Logout</a></li>
                         </ul>
                     </div>
                 {% else %}
                     <a href="{{ url_for('login') }}" class="sidebar-btn">
-                        <i class="fas fa-sign-in-alt fa-fw me-2"></i> Login / Register
+                        <i class="fas fa-sign-in-alt fa-fw me-2" aria-hidden="true"></i> Login / Register
                     </a>
                 {% endif %}
             </div>
 
             <div class="sidebar-section">
-                 <button class="sidebar-btn dark-mode-toggle w-100">
-                    <i class="fas fa-moon fa-fw me-2"></i> <span class="theme-text">Dark Mode</span>
+                 <button class="sidebar-btn dark-mode-toggle w-100" type="button" aria-pressed="false">
+                    <i class="fas fa-moon fa-fw me-2" aria-hidden="true"></i> <span class="theme-text">Dark Mode</span>
                  </button>
             </div>
-            
+
             <hr class="my-2">
 
             <div class="sidebar-section flex-grow-1">
@@ -2055,15 +2217,15 @@ BASE_HTML_TEMPLATE = """
                             {% set _ = cat_url_params.update({'filter_date': request.args.get('filter_date')}) %}
                         {% endif %}
                         <li class="nav-item">
-                            <a href="{{ url_for('index', **cat_url_params) }}" class="nav-link {% if selected_category == cat_item %}active{% endif %}">
-                                <i class="fas fa-fw fa-{% if cat_item == 'All Articles' %}globe-americas{% elif cat_item == 'Popular Stories' %}fire-alt{% elif cat_item == "Yesterday's Headlines" %}history{% elif cat_item == 'Community Hub' %}users{% endif %} me-2"></i>
+                            <a href="{{ url_for('index', **cat_url_params) }}" class="nav-link {% if selected_category == cat_item %}active{% endif %}" {% if selected_category == cat_item %}aria-current="page"{% endif %}>
+                                <i class="fas fa-fw fa-{% if cat_item == 'All Articles' %}globe-americas{% elif cat_item == 'Popular Stories' %}fire-alt{% elif cat_item == "Yesterday's Headlines" %}history{% elif cat_item == 'Community Hub' %}users{% endif %} me-2" aria-hidden="true"></i>
                                 {{ cat_item }}
                             </a>
                         </li>
                     {% endfor %}
                 </ul>
             </div>
-            
+
             <hr class="my-2">
 
             <div class="sidebar-section">
@@ -2082,11 +2244,30 @@ BASE_HTML_TEMPLATE = """
         </div>
     </div>
 
+    <div class="modal fade" id="confirmActionModal" tabindex="-1" aria-hidden="true" aria-labelledby="confirmActionModalLabel">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header border-0 pb-0">
+                    <h2 class="modal-title h5" id="confirmActionModalLabel">Please confirm</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-0" id="confirmActionModalBody">Are you sure?</p>
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmActionModalConfirm">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="alert-placeholder">
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
                 <div class="alert alert-{{ category }} alert-dismissible fade show alert-top" role="alert">
+                    <i class="fas {{ {'success': 'fa-circle-check', 'danger': 'fa-circle-exclamation', 'warning': 'fa-triangle-exclamation'}.get(category, 'fa-circle-info') }} alert-icon" aria-hidden="true"></i>
                     <span>{{ message }}</span>
                     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>
@@ -2095,21 +2276,21 @@ BASE_HTML_TEMPLATE = """
         {% endwith %}
     </div>
 
-    <main class="container main-content my-4">
+    <main class="container main-content my-4" id="main-content">
         {% block content %}{% endblock %}
     </main>
-    
+
     {% if session.user_id %}
     <div class="admin-controls">
-        <button class="add-article-btn" data-bs-toggle="modal" data-bs-target="#addArticleModal" title="Post a New Article">
-            <i class="fas fa-pen-to-square"></i>
+        <button class="add-article-btn" data-bs-toggle="modal" data-bs-target="#addArticleModal" title="Post a New Article" aria-label="Post a new article">
+            <i class="fas fa-pen-to-square" aria-hidden="true"></i>
         </button>
     </div>
-    <div class="modal fade" id="addArticleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="addArticleModal" tabindex="-1" aria-hidden="true" aria-labelledby="addArticleModalLabel">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4">
                 <div class="modal-header border-0 pb-0">
-                    <h4 class="modal-title">Post New Article</h4>
+                    <h2 class="modal-title h4" id="addArticleModalLabel">Post New Article</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -2132,12 +2313,12 @@ BASE_HTML_TEMPLATE = """
             <div class="footer-content row">
                 <div class="footer-section col-lg-4 col-md-6 mb-4">
                     <div class="d-flex align-items-center mb-2">
-                        <i class="fas fa-bolt-lightning me-2" style="color:var(--secondary-light); font-size: 1.5rem;"></i>
-                        <span class="h5 mb-0" style="color:white; font-family: 'Poppins', sans-serif;">BrieflyAI</span>
+                        <i class="fas fa-bolt-lightning me-2" style="color:var(--secondary-light); font-size: 1.4rem;" aria-hidden="true"></i>
+                        <span class="h5 mb-0" style="color:#fff; font-weight:800; letter-spacing:-0.03em;">BrieflyAI</span>
                     </div>
                     <p class="small text-light">Your premier source for AI summarized, India-centric news.</p>
                     <div class="social-links">
-                        <a href="#" title="Twitter"><i class="fab fa-twitter"></i></a><a href="#" title="Facebook"><i class="fab fa-facebook-f"></i></a><a href="#" title="LinkedIn"><i class="fab fa-linkedin-in"></i></a><a href="#" title="Instagram"><i class="fab fa-instagram"></i></a>
+                        <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="fab fa-twitter" aria-hidden="true"></i></a><a href="#" title="Facebook" aria-label="BrieflyAI on Facebook"><i class="fab fa-facebook-f" aria-hidden="true"></i></a><a href="#" title="LinkedIn" aria-label="BrieflyAI on LinkedIn"><i class="fab fa-linkedin-in" aria-hidden="true"></i></a><a href="#" title="Instagram" aria-label="BrieflyAI on Instagram"><i class="fab fa-instagram" aria-hidden="true"></i></a>
                     </div>
                 </div>
                 <div class="footer-section col-lg-2 col-md-6 mb-4">
@@ -2160,21 +2341,197 @@ BASE_HTML_TEMPLATE = """
                     <h5>Newsletter</h5>
                     <p class="small text-light">Subscribe for weekly updates!</p>
                     <form action="{{ url_for('subscribe') }}" method="POST" class="mt-3">
+                        <label for="footerNewsletterEmail" class="visually-hidden">Your email</label>
                         <div class="input-group">
-                            <input type="email" name="email" class="form-control form-control-sm" placeholder="Your Email" aria-label="Your Email" required style="background: #374151; border-color: #4B5563; color: white;">
+                            <input type="email" id="footerNewsletterEmail" name="email" class="form-control form-control-sm footer-newsletter-input" placeholder="Your Email" aria-label="Your Email" required>
                             <button class="btn btn-sm btn-primary" type="submit">Subscribe</button>
                         </div>
                     </form>
                 </div>
             </div>
-            <div class="copyright">&copy; 2025 BrieflyAI. All rights reserved. Made with <i class="fas fa-heart text-danger"></i> in India.</div>
+            <div class="copyright">
+                <span>&copy; {{ current_year }} BrieflyAI. All rights reserved. Made with <i class="fas fa-heart text-danger" aria-hidden="true"></i> in India.</span>
+                <button type="button" class="back-to-top-link" id="backToTopBtn"><i class="fas fa-arrow-up" aria-hidden="true"></i> Back to top</button>
+            </div>
         </div>
     </footer>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" defer></script>
     <script>
+    window.BrieflyAI = window.BrieflyAI || {};
+    BrieflyAI.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    BrieflyAI.debounce = function (fn, wait) {
+        wait = wait || 300;
+        var t;
+        return function () {
+            var args = arguments, ctx = this;
+            clearTimeout(t);
+            t = setTimeout(function () { fn.apply(ctx, args); }, wait);
+        };
+    };
+
+    BrieflyAI.showToast = function (message, type, timeout) {
+        type = type || 'info';
+        timeout = timeout || 5000;
+        var placeholder = document.getElementById('alert-placeholder');
+        if (!placeholder) { return null; }
+        var icons = { success: 'fa-circle-check', danger: 'fa-circle-exclamation', warning: 'fa-triangle-exclamation', info: 'fa-circle-info' };
+        var wrap = document.createElement('div');
+        wrap.className = 'alert alert-' + type + ' alert-dismissible fade show alert-top';
+        wrap.setAttribute('role', 'alert');
+        var icon = document.createElement('i');
+        icon.className = 'fas ' + (icons[type] || icons.info) + ' alert-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        var text = document.createElement('span');
+        text.textContent = message;
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'btn-close';
+        closeBtn.setAttribute('data-bs-dismiss', 'alert');
+        closeBtn.setAttribute('aria-label', 'Close');
+        wrap.appendChild(icon); wrap.appendChild(text); wrap.appendChild(closeBtn);
+        placeholder.appendChild(wrap);
+        setTimeout(function () {
+            if (!document.body.contains(wrap)) { return; }
+            if (window.bootstrap && bootstrap.Alert) { bootstrap.Alert.getOrCreateInstance(wrap).close(); }
+            else { wrap.remove(); }
+        }, timeout);
+        return wrap;
+    };
+
+    BrieflyAI.confirmAction = function (options) {
+        options = options || {};
+        return new Promise(function (resolve) {
+            var modalEl = document.getElementById('confirmActionModal');
+            if (!modalEl || typeof bootstrap === 'undefined') { resolve(window.confirm(options.message || 'Are you sure?')); return; }
+            modalEl.querySelector('#confirmActionModalLabel').textContent = options.title || 'Please confirm';
+            modalEl.querySelector('#confirmActionModalBody').textContent = options.message || 'Are you sure?';
+            var confirmBtn = modalEl.querySelector('#confirmActionModalConfirm');
+            confirmBtn.textContent = options.confirmText || 'Confirm';
+            confirmBtn.className = 'btn ' + (options.danger === false ? 'btn-primary' : 'btn-danger');
+            var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            var decided = false;
+            function cleanup() {
+                confirmBtn.removeEventListener('click', onConfirm);
+                modalEl.removeEventListener('hidden.bs.modal', onHidden);
+            }
+            function onConfirm() { decided = true; modal.hide(); resolve(true); cleanup(); }
+            function onHidden() { if (!decided) { resolve(false); } cleanup(); }
+            confirmBtn.addEventListener('click', onConfirm);
+            modalEl.addEventListener('hidden.bs.modal', onHidden);
+            modal.show();
+        });
+    };
+
+    BrieflyAI.initImageLoadStates = function (root) {
+        (root || document).querySelectorAll('.article-image, .hero-image').forEach(function (img) {
+            if (img.dataset.loadStateInit) { return; }
+            img.dataset.loadStateInit = '1';
+            var wrap = img.closest('.article-image-container, .hero-image-wrap');
+            var markLoaded = function () { img.classList.add('is-loaded'); if (wrap) { wrap.classList.add('is-loaded'); } };
+            var markFallback = function () { if (wrap) { wrap.classList.add('img-fallback'); } };
+            if (img.complete) {
+                if (img.naturalWidth > 0) { markLoaded(); } else { markFallback(); }
+            } else {
+                img.addEventListener('load', markLoaded, { once: true });
+                img.addEventListener('error', markFallback, { once: true });
+            }
+        });
+    };
+
+    /* Scroll-triggered reveal. Elements only get the hiding attribute once JS is running,
+       so users without JS (or with reduced motion) always see fully visible content. */
+    BrieflyAI.initScrollReveal = function (root) {
+        if (BrieflyAI.reducedMotion || !('IntersectionObserver' in window)) { return; }
+        var selector = '.article-card, .ai-synthesis-card, .featured-story, .community-hub-header, .state-card, .contact-card, .profile-header-card, .summary-box, .takeaways-box, .list-page-header';
+        var items = Array.prototype.slice.call((root || document).querySelectorAll(selector));
+        if (!items.length) { return; }
+
+        if (!BrieflyAI._revealObserver) {
+            BrieflyAI._revealObserver = new IntersectionObserver(function (entries, obs) {
+                entries.forEach(function (entry) {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('is-revealed');
+                        obs.unobserve(entry.target);
+                    }
+                });
+            }, { rootMargin: '0px 0px -8% 0px', threshold: 0.05 });
+        }
+
+        items.forEach(function (el, i) {
+            if (el.dataset.reveal !== undefined) { return; }
+            // Hand over from the CSS entrance animation so the two don't fight.
+            el.classList.remove('animate-fade-in');
+            el.style.animation = 'none';
+            el.dataset.reveal = '';
+            el.style.setProperty('--reveal-delay', Math.min(i % 6, 5) * 55 + 'ms');
+            var rect = el.getBoundingClientRect();
+            if (rect.top < window.innerHeight * 0.95) {
+                requestAnimationFrame(function () { el.classList.add('is-revealed'); });
+            } else {
+                BrieflyAI._revealObserver.observe(el);
+            }
+        });
+    };
+
+    /* Subtle parallax on the featured story image. Desktop + motion-allowed only. */
+    BrieflyAI.initParallax = function () {
+        var layer = document.querySelector('.featured-story-image');
+        if (!layer || BrieflyAI.reducedMotion || window.innerWidth < 992) { return; }
+        var ticking = false;
+        function update() {
+            var rect = layer.getBoundingClientRect();
+            if (rect.bottom > 0 && rect.top < window.innerHeight) {
+                var progress = (rect.top + rect.height / 2 - window.innerHeight / 2) / window.innerHeight;
+                layer.style.setProperty('--parallax-y', (progress * -26).toFixed(1) + 'px');
+            }
+            ticking = false;
+        }
+        window.addEventListener('scroll', function () {
+            if (!ticking) { ticking = true; requestAnimationFrame(update); }
+        }, { passive: true });
+        update();
+    };
+
+    /* Third-party tags (ads, analytics) are deferred until the page is idle so they
+       never compete with content for bandwidth or main-thread time during load. */
+    BrieflyAI.loadDeferredScripts = function () {
+        if (BrieflyAI._deferredLoaded) { return; }
+        BrieflyAI._deferredLoaded = true;
+        window.dataLayer = window.dataLayer || [];
+        window.gtag = function () { window.dataLayer.push(arguments); };
+        window.gtag('js', new Date());
+        window.gtag('config', 'G-CV5LWJ7NQ7');
+        [
+            'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6975904325280886',
+            'https://www.googletagmanager.com/gtag/js?id=G-CV5LWJ7NQ7'
+        ].forEach(function (src) {
+            var s = document.createElement('script');
+            s.src = src; s.async = true; s.crossOrigin = 'anonymous';
+            document.head.appendChild(s);
+        });
+    };
+
     document.addEventListener('DOMContentLoaded', function () {
         try {
+            BrieflyAI.initImageLoadStates();
+            BrieflyAI.initScrollReveal();
+            BrieflyAI.initParallax();
+
+            var navbar = document.getElementById('mainNavbar');
+            if (navbar) {
+                var navTicking = false;
+                var syncNav = function () {
+                    navbar.classList.toggle('is-scrolled', window.scrollY > 12);
+                    navTicking = false;
+                };
+                window.addEventListener('scroll', function () {
+                    if (!navTicking) { navTicking = true; requestAnimationFrame(syncNav); }
+                }, { passive: true });
+                syncNav();
+            }
+
             const darkModeToggle = document.querySelector('.dark-mode-toggle');
             if (darkModeToggle) {
                 const body = document.body;
@@ -2182,37 +2539,37 @@ BASE_HTML_TEMPLATE = """
                     const isDarkMode = body.classList.contains('dark-mode');
                     const themeIcon = darkModeToggle.querySelector('i');
                     const themeText = darkModeToggle.querySelector('.theme-text');
-                    if (themeIcon) {
-                        themeIcon.className = isDarkMode ? 'fas fa-sun fa-fw me-2' : 'fas fa-moon fa-fw me-2';
-                    }
-                    if (themeText) {
-                        themeText.textContent = isDarkMode ? 'Light Mode' : 'Dark Mode';
-                    }
+                    if (themeIcon) { themeIcon.className = isDarkMode ? 'fas fa-sun fa-fw me-2' : 'fas fa-moon fa-fw me-2'; }
+                    if (themeText) { themeText.textContent = isDarkMode ? 'Light Mode' : 'Dark Mode'; }
+                    darkModeToggle.setAttribute('aria-pressed', isDarkMode ? 'true' : 'false');
                 };
                 const applyTheme = (theme) => {
                     body.classList.toggle('dark-mode', theme === 'enabled');
-                    localStorage.setItem('darkMode', theme);
-                    document.cookie = "darkMode=" + theme + ";path=/;max-age=31536000;SameSite=Lax";
+                    try {
+                        localStorage.setItem('darkMode', theme);
+                        document.cookie = "darkMode=" + theme + ";path=/;max-age=31536000;SameSite=Lax";
+                    } catch (storageErr) {
+                        console.warn("Could not persist theme preference:", storageErr);
+                    }
                     updateThemeUI();
                 };
                 darkModeToggle.addEventListener('click', () => {
-                    const isEnabled = body.classList.contains('dark-mode');
-                    applyTheme(isEnabled ? 'disabled' : 'enabled');
+                    applyTheme(body.classList.contains('dark-mode') ? 'disabled' : 'enabled');
                 });
                 updateThemeUI();
             }
 
-            const flashedAlerts = document.querySelectorAll('#alert-placeholder .alert');
-            flashedAlerts.forEach(function(alert) { 
-                setTimeout(function() {
-                    const bsAlert = bootstrap.Alert.getOrCreateInstance(alert);
-                    if (bsAlert) bsAlert.close();
+            document.querySelectorAll('#alert-placeholder .alert').forEach(function (alert) {
+                setTimeout(function () {
+                    if (!document.body.contains(alert)) { return; }
+                    if (window.bootstrap && bootstrap.Alert) { bootstrap.Alert.getOrCreateInstance(alert).close(); }
+                    else { alert.remove(); }
                 }, 7000);
             });
 
             const dateFilterForm = document.getElementById('dateFilterForm');
             if (dateFilterForm) {
-                dateFilterForm.addEventListener('submit', function(event) {
+                dateFilterForm.addEventListener('submit', function (event) {
                     event.preventDefault();
                     const dateInput = document.getElementById('articleDateFilter');
                     if (dateInput && dateInput.value) {
@@ -2223,21 +2580,135 @@ BASE_HTML_TEMPLATE = """
                 });
                 const clearDateFilterBtn = document.getElementById('clearDateFilter');
                 if (clearDateFilterBtn) {
-                    clearDateFilterBtn.addEventListener('click', function() {
+                    clearDateFilterBtn.addEventListener('click', function () {
                         window.location.href = "{{ url_for('index', category_name='All Articles') }}";
                     });
                 }
             }
+
+            document.querySelectorAll('.search-container').forEach(function (container) {
+                const input = container.querySelector('input[type="search"]');
+                const clearBtn = container.querySelector('.search-clear-btn');
+                const form = container.tagName === 'FORM' ? container : container.closest('form');
+                if (!input) { return; }
+                const syncState = BrieflyAI.debounce(function () {
+                    container.classList.toggle('has-value', input.value.trim().length > 0);
+                }, 120);
+                input.addEventListener('input', syncState);
+                syncState();
+                if (clearBtn) {
+                    clearBtn.addEventListener('click', function () {
+                        input.value = '';
+                        container.classList.remove('has-value');
+                        input.focus();
+                    });
+                }
+                if (form) {
+                    form.addEventListener('submit', function () {
+                        if (!input.value.trim()) { return; }
+                        const icon = container.querySelector('.search-icon');
+                        if (icon) { icon.className = 'fas fa-circle-notch fa-spin search-icon'; }
+                        input.setAttribute('aria-busy', 'true');
+                    });
+                }
+            });
+
+            const backToTopBtn = document.getElementById('backToTopBtn');
+            if (backToTopBtn) {
+                backToTopBtn.addEventListener('click', function () {
+                    window.scrollTo({ top: 0, behavior: BrieflyAI.reducedMotion ? 'auto' : 'smooth' });
+                });
+            }
         } catch (e) {
             console.error("An error occurred in the base layout script:", e);
         }
+    });
+
+    window.addEventListener('load', function () {
+        if ('requestIdleCallback' in window) { requestIdleCallback(BrieflyAI.loadDeferredScripts, { timeout: 3000 }); }
+        else { setTimeout(BrieflyAI.loadDeferredScripts, 1800); }
     });
     </script>
     {% block scripts_extra %}{% endblock %}
 </body>
 </html>
 """
+_COMMENT_TEMPLATE = """
+{% set depth = depth|default(0) %}
+{% set has_reaction_data = comment_data is defined and comment.id in comment_data %}
+{% set reactions = comment_data[comment.id].reactions if has_reaction_data else {} %}
+{% set user_reaction = comment_data[comment.id].user_reaction if has_reaction_data else none %}
+<div class="comment-thread" id="comment-{{ comment.id }}" data-depth="{{ depth }}">
+    <div class="comment-container">
+        <div class="comment-avatar" aria-hidden="true" title="{{ comment.author.name if comment.author else 'Unknown' }}">{{ (comment.author.name[0]|upper if comment.author and comment.author.name else 'U') }}</div>
+        <div class="comment-body">
+            <div class="comment-header">
+                {% if comment.author %}
+                <a href="{{ url_for('public_profile', username=comment.author.username) }}" class="comment-author text-decoration-none">{{ comment.author.name }}</a>
+                {% else %}
+                <span class="comment-author">Anonymous</span>
+                {% endif %}
+                <span class="comment-date">{{ comment.timestamp | to_ist }}</span>
+            </div>
 
+            <p class="comment-content mb-2">{{ comment.content }}</p>
+
+            <div class="edit-form-container">
+                <form class="edit-comment-form">
+                    <label class="visually-hidden" for="edit-content-{{ comment.id }}">Edit your comment</label>
+                    <textarea class="form-control form-control-sm mb-2" id="edit-content-{{ comment.id }}" name="content" rows="3" required>{{ comment.content }}</textarea>
+                    <div class="d-flex justify-content-end gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary cancel-edit-btn">Cancel</button>
+                        <button type="submit" class="btn btn-sm btn-primary">Save Changes</button>
+                    </div>
+                </form>
+            </div>
+
+            {% if session.user_id %}
+            <div class="comment-actions">
+                <div class="reaction-box" id="reaction-box-{{ comment.id }}" role="menu" aria-label="Choose a reaction">
+                    {% for emoji, emoji_label in [('\U0001F44D','Like'), ('\u2764\uFE0F','Love'), ('\U0001F602','Laugh'), ('\U0001F62E','Wow'), ('\U0001F622','Sad'), ('\U0001F620','Angry')] %}
+                        <button type="button" class="reaction-emoji {% if user_reaction == emoji %}is-selected{% endif %}" data-emoji="{{ emoji }}" data-comment-id="{{ comment.id }}" role="menuitem" title="{{ emoji_label }}" aria-label="React with {{ emoji_label }}">{{ emoji }}</button>
+                    {% endfor %}
+                </div>
+                <button type="button" class="react-btn" data-comment-id="{{ comment.id }}" title="React" aria-haspopup="true" aria-expanded="false" aria-controls="reaction-box-{{ comment.id }}"><i class="far fa-smile" aria-hidden="true"></i> React</button>
+                <button type="button" class="reply-btn" data-comment-id="{{ comment.id }}" title="Reply"><i class="fas fa-reply" aria-hidden="true"></i> Reply</button>
+
+                {% if session.user_id == comment.user_id %}
+                    <button type="button" class="edit-btn" data-comment-id="{{ comment.id }}" title="Edit"><i class="fas fa-pencil-alt" aria-hidden="true"></i> Edit</button>
+                    <button type="button" class="delete-btn" data-comment-id="{{ comment.id }}" title="Delete"><i class="fas fa-trash-alt" aria-hidden="true"></i> Delete</button>
+                {% endif %}
+            </div>
+            <div class="reply-form-container" id="reply-form-container-{{ comment.id }}">
+                <form class="reply-form">
+                    <input type="hidden" name="parent_id" value="{{ comment.id }}">
+                    <label class="visually-hidden" for="reply-content-{{ comment.id }}">Write a reply to {{ comment.author.name if comment.author else 'this comment' }}</label>
+                    <div class="mb-2"><textarea class="form-control form-control-sm" id="reply-content-{{ comment.id }}" name="content" rows="2" placeholder="Write a reply..." required></textarea></div>
+                    <div class="d-flex justify-content-end gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary cancel-reply-btn">Cancel</button>
+                        <button type="submit" class="btn btn-sm btn-primary">Post Reply</button>
+                    </div>
+                </form>
+            </div>
+            {% endif %}
+
+            <div class="reaction-summary" id="reaction-summary-{{ comment.id }}">
+                {% for emoji, count in reactions.items() %}
+                    {% if count and count > 0 %}
+                    <div class="reaction-pill {% if user_reaction == emoji %}user-reacted{% endif %}" data-emoji="{{ emoji }}"><span class="emoji">{{ emoji }}</span><span class="count">{{ count }}</span></div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    <div class="comment-replies {% if depth >= 3 %}comment-replies-flat{% endif %}" id="replies-of-{{ comment.id }}">
+        {% for comment in comment.replies %}
+            {% set depth = depth + 1 %}
+            {% include '_COMMENT_TEMPLATE' %}
+        {% endfor %}
+    </div>
+</div>
+"""
 INDEX_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}
@@ -2254,14 +2725,14 @@ INDEX_HTML_TEMPLATE = """
 
     {# ============== LAYOUT 1: MAIN HOMEPAGE (WITH ALL FEATURES) ============== #}
     <div class="animate-fade-in">
-        
+
         {% if synthesis %}
         <div class="ai-synthesis-card">
             <div class="synthesis-header">
-                <i class="fas fa-brain"></i>
+                <i class="fas fa-brain" aria-hidden="true"></i>
                 <h2>Today's Briefing: The Big Picture</h2>
             </div>
-            <p class="synthesis-text">"{{ synthesis }}"</p>
+            <p class="synthesis-text">&ldquo;{{ synthesis }}&rdquo;</p>
             {% if keywords %}
             <div class="synthesis-keywords">
                 {% for keyword in keywords %}
@@ -2274,28 +2745,28 @@ INDEX_HTML_TEMPLATE = """
 
         {% if featured_article %}
         <article class="featured-story">
-            <div class="featured-story-image" style="background-image: url('{{ featured_article.urlToImage }}')"></div>
+            <div class="featured-story-image" style="background-image: url('{{ featured_article.urlToImage }}')" role="img" aria-label="{{ featured_article.title|truncate(80) }}"></div>
             <div class="featured-story-content">
                 <div class="article-meta">
-                    <span class="meta-item"><i class="fas fa-fire-alt text-danger"></i> Top Story</span>
-                    <span class="meta-item"><i class="fas fa-building"></i> {{ featured_article.source.name|truncate(20) }}</span>
+                    <span class="meta-item"><i class="fas fa-fire-alt" aria-hidden="true"></i> Top Story</span>
+                    <span class="meta-item"><i class="fas fa-building" aria-hidden="true"></i> {{ featured_article.source.name|truncate(20) }}</span>
                 </div>
                 <h2><a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}">{{ featured_article.title }}</a></h2>
                 <p class="description">{{ featured_article.description|truncate(150) }}</p>
-                <a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}" class="read-more-btn">Read Full Story <i class="fas fa-arrow-right ms-1"></i></a>
+                <a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}" class="read-more-btn">Read Full Story <i class="fas fa-arrow-right ms-1" aria-hidden="true"></i></a>
             </div>
         </article>
         {% endif %}
 
-        <ul class="nav nav-tabs nav-fill mb-3" id="newsTab" role="tablist" style="font-weight: 600;">
+        <ul class="nav nav-tabs nav-fill mb-3" id="newsTab" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="popular-tab" data-bs-toggle="tab" data-bs-target="#popular-tab-pane" type="button" role="tab" aria-controls="popular-tab-pane" aria-selected="true">
-                    <i class="fas fa-fire-alt me-1"></i> POPULAR STORIES
+                    <i class="fas fa-fire-alt me-1" aria-hidden="true"></i> POPULAR STORIES
                 </button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="yesterday-tab" data-bs-toggle="tab" data-bs-target="#yesterday-tab-pane" type="button" role="tab" aria-controls="yesterday-tab-pane" aria-selected="false">
-                    <i class="fas fa-history me-1"></i> YESTERDAY'S HEADLINES
+                    <i class="fas fa-history me-1" aria-hidden="true"></i> YESTERDAY'S HEADLINES
                 </button>
             </li>
         </ul>
@@ -2306,31 +2777,39 @@ INDEX_HTML_TEMPLATE = """
                     {% if popular_articles %}
                         {% for art in popular_articles %}
                             <div class="col-md-6 col-lg-4 d-flex">
-                                <article class="article-card d-flex flex-column w-100">
+                                <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ (loop.index0 * 0.05)|round(2) }}s">
                                     {% set article_url = url_for('article_detail', article_hash_id=art.id) %}
-                                    <div class="article-image-container"><a href="{{ article_url }}"><img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}"></a></div>
+                                    <div class="article-image-container {% if not art.urlToImage %}img-fallback{% endif %}">
+                                        <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if art.urlToImage %}<img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="{{ 'eager' if loop.index0 < 3 else 'lazy' }}" decoding="async">{% endif %}</a>
+                                        <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                                    </div>
                                     <div class="article-body d-flex flex-column">
                                         <div class="d-flex justify-content-between align-items-start">
-                                            <h5 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h5>
-                                            {% if session.user_id %}<button class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" style="margin-left: 10px; padding-top:0;" title="Bookmark" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="fa-solid fa-bookmark"></i></button>{% endif %}
+                                            <h3 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
+                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="fa-solid fa-bookmark" aria-hidden="true"></i></button>{% endif %}
                                         </div>
                                         <div class="article-meta small mb-2">
-                                            <span class="meta-item text-muted"><i class="fas fa-building"></i> {{ art.source.name|truncate(20) }}</span>
-                                            <span class="meta-item text-muted"><i class="far fa-calendar-alt"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
+                                            <span class="meta-item text-muted"><i class="fas fa-building" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
+                                            <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                                         </div>
                                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small"></i></a>
+                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
                                     </div>
                                 </article>
                             </div>
                         {% endfor %}
                     {% else %}
-                        <div class="col-12"><div class="alert alert-light text-center">More popular stories are currently unavailable.</div></div>
+                        <div class="col-12">
+                            <div class="state-card state-card-solid py-4">
+                                <div class="state-card-icon state-card-icon-sm"><i class="fas fa-satellite-dish" aria-hidden="true"></i></div>
+                                <p class="state-card-text mb-0">More popular stories are on their way &mdash; please check back shortly.</p>
+                            </div>
+                        </div>
                     {% endif %}
                 </div>
                 {% if popular_articles %}
                 <div class="text-center mt-4">
-                    <a href="{{ url_for('index', category_name='Popular Stories') }}" class="btn btn-outline-primary">View All Popular Stories <i class="fas fa-arrow-right ms-1"></i></a>
+                    <a href="{{ url_for('index', category_name='Popular Stories') }}" class="btn btn-outline-primary">View All Popular Stories <i class="fas fa-arrow-right ms-1" aria-hidden="true"></i></a>
                 </div>
                 {% endif %}
             </div>
@@ -2339,31 +2818,39 @@ INDEX_HTML_TEMPLATE = """
                     {% if latest_yesterday_articles %}
                         {% for art in latest_yesterday_articles %}
                              <div class="col-md-6 col-lg-4 d-flex">
-                                <article class="article-card d-flex flex-column w-100">
+                                <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ (loop.index0 * 0.05)|round(2) }}s">
                                     {% set article_url = url_for('article_detail', article_hash_id=art.id) %}
-                                    <div class="article-image-container"><a href="{{ article_url }}"><img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}"></a></div>
+                                    <div class="article-image-container {% if not art.urlToImage %}img-fallback{% endif %}">
+                                        <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if art.urlToImage %}<img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
+                                        <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                                    </div>
                                     <div class="article-body d-flex flex-column">
                                         <div class="d-flex justify-content-between align-items-start">
-                                            <h5 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h5>
-                                            {% if session.user_id %}<button class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" style="margin-left: 10px; padding-top:0;" title="Bookmark" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="fa-solid fa-bookmark"></i></button>{% endif %}
+                                            <h3 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
+                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="fa-solid fa-bookmark" aria-hidden="true"></i></button>{% endif %}
                                         </div>
                                         <div class="article-meta small mb-2">
-                                            <span class="meta-item text-muted"><i class="fas fa-building"></i> {{ art.source.name|truncate(20) }}</span>
-                                            <span class="meta-item text-muted"><i class="far fa-calendar-alt"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
+                                            <span class="meta-item text-muted"><i class="fas fa-building" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
+                                            <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                                         </div>
                                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small"></i></a>
+                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
                                     </div>
                                 </article>
                             </div>
                         {% endfor %}
                     {% else %}
-                        <div class="col-12"><div class="alert alert-light text-center">Could not load yesterday's articles.</div></div>
+                        <div class="col-12">
+                            <div class="state-card state-card-solid py-4">
+                                <div class="state-card-icon state-card-icon-sm"><i class="fas fa-satellite-dish" aria-hidden="true"></i></div>
+                                <p class="state-card-text mb-0">Yesterday's headlines couldn't be loaded right now &mdash; please check back shortly.</p>
+                            </div>
+                        </div>
                     {% endif %}
                 </div>
                 {% if latest_yesterday_articles %}
                 <div class="text-center mt-4">
-                    <a href="{{ url_for('index', category_name="Yesterday's Headlines") }}" class="btn btn-outline-primary">View All of Yesterday's Headlines <i class="fas fa-arrow-right ms-1"></i></a>
+                    <a href="{{ url_for('index', category_name="Yesterday's Headlines") }}" class="btn btn-outline-primary">View All of Yesterday's Headlines <i class="fas fa-arrow-right ms-1" aria-hidden="true"></i></a>
                 </div>
                 {% endif %}
             </div>
@@ -2376,27 +2863,54 @@ INDEX_HTML_TEMPLATE = """
     {# This block handles all other pages like categories, search, and date filters. #}
 
     {% if selected_category == 'All Articles' and current_filter_date %}
-        <h4 class="mb-3 fst-italic">Showing articles for: {{ current_filter_date }}</h4>
-    {% elif selected_category != 'All Articles' and selected_category != 'Community Hub' %}
-         <h2 class="pb-2 border-bottom mb-4">{{ selected_category }}</h2>
+        <div class="list-page-header">
+            <span class="eyebrow"><i class="far fa-calendar-alt me-1" aria-hidden="true"></i> Filtered by date</span>
+            <h1>{{ current_filter_date }}</h1>
+        </div>
+    {% elif selected_category == 'Community Hub' %}
+        <div class="community-hub-header">
+            <div class="community-hub-header-text">
+                <span class="eyebrow"><i class="fas fa-users me-1" aria-hidden="true"></i> Community Hub</span>
+                <h1>Stories from our readers</h1>
+                <p class="community-hub-sub">Real perspectives, posted by the BrieflyAI community. Have something to say about today's news?</p>
+            </div>
+            {% if session.user_id %}
+                <button type="button" class="btn btn-primary-modal community-hub-cta" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="fas fa-pen-to-square me-2" aria-hidden="true"></i>Share Your Story</button>
+            {% else %}
+                <a href="{{ url_for('login', next=request.full_path) }}" class="btn btn-outline-primary community-hub-cta"><i class="fas fa-sign-in-alt me-2" aria-hidden="true"></i>Log In to Post</a>
+            {% endif %}
+        </div>
+    {% elif query %}
+        <div class="list-page-header">
+            <span class="eyebrow"><i class="fas fa-magnifying-glass me-1" aria-hidden="true"></i> Search results</span>
+            <h1>&ldquo;{{ query|truncate(40) }}&rdquo;</h1>
+        </div>
+    {% elif selected_category != 'All Articles' %}
+        <div class="list-page-header">
+            <span class="eyebrow"><i class="fas fa-{% if selected_category == 'Popular Stories' %}fire-alt{% elif selected_category == "Yesterday's Headlines" %}history{% else %}layer-group{% endif %} me-1" aria-hidden="true"></i> Category</span>
+            <h1>{{ selected_category }}</h1>
+        </div>
     {% endif %}
 
     {% if articles and not is_main_homepage %} {# This section is for the paginated list view only #}
         <div class="row g-4">
             {% for art in articles %}
             <div class="col-md-6 col-lg-4 d-flex">
-                <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ loop.index0 * 0.05 }}s">
+                <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ (loop.index0 * 0.05)|round(2) }}s">
                     {% set article_url = url_for('article_detail', article_hash_id=(art.article_hash_id if art.is_community_article else art.id)) %}
-                    <div class="article-image-container">
-                        <a href="{{ article_url }}">
-                        <img src="{{ art.image_url if art.is_community_article else art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}"></a>
+                    {% set img_src = art.image_url if art.is_community_article else art.urlToImage %}
+                    <div class="article-image-container {% if not img_src %}img-fallback{% endif %}">
+                        <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">
+                        {% if img_src %}<img src="{{ img_src }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="{{ 'eager' if loop.index0 < 3 else 'lazy' }}" decoding="async">{% endif %}</a>
+                        <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
                     </div>
                     <div class="article-body d-flex flex-column">
                         <div class="d-flex justify-content-between align-items-start">
-                            <h5 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h5>
+                            <h3 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
                             {% if session.user_id %}
-                            <button class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" style="margin-left: 10px; padding-top:0;"
+                            <button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}"
                                     title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}"
+                                    aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}"
                                     data-article-hash-id="{{ art.article_hash_id if art.is_community_article else art.id }}"
                                     data-is-community="{{ 'true' if art.is_community_article else 'false' }}"
                                     data-title="{{ art.title|e }}"
@@ -2404,37 +2918,51 @@ INDEX_HTML_TEMPLATE = """
                                     data-image-url="{{ (art.image_url if art.is_community_article else art.urlToImage)|e }}"
                                     data-description="{{ (art.description if art.description else '')|e }}"
                                     data-published-at="{{ (art.published_at.isoformat() if art.is_community_article and art.published_at else (art.publishedAt if not art.is_community_article and art.publishedAt else ''))|e }}">
-                                <i class="fa-solid fa-bookmark"></i>
+                                <i class="fa-solid fa-bookmark" aria-hidden="true"></i>
                             </button>
                             {% endif %}
                         </div>
                         <div class="article-meta small mb-2">
-                            <span class="meta-item text-muted"><i class="fas fa-{{ 'user-edit' if art.is_community_article else 'building' }}"></i> {% if art.is_community_article and art.author %}<a href="{{ url_for('public_profile', username=art.author.username) }}" class="text-muted text-decoration-none">{{ art.author.name|truncate(20) }}</a>{% else %}{{ art.source.name|truncate(20) }}{% endif %}</span>
-                            <span class="meta-item text-muted"><i class="far fa-calendar-alt"></i> {{ (art.published_at | to_ist if art.is_community_article else (art.publishedAt | to_ist if art.publishedAt else 'N/A')) }}</span>
+                            <span class="meta-item text-muted"><i class="fas fa-{{ 'user-edit' if art.is_community_article else 'building' }}" aria-hidden="true"></i> {% if art.is_community_article and art.author %}<a href="{{ url_for('public_profile', username=art.author.username) }}" class="text-muted text-decoration-none">{{ art.author.name|truncate(20) }}</a>{% else %}{{ art.source.name|truncate(20) }}{% endif %}</span>
+                            <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (art.published_at | to_ist if art.is_community_article else (art.publishedAt | to_ist if art.publishedAt else 'N/A')) }}</span>
                         </div>
                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small"></i></a>
+                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
                     </div>
                 </article>
             </div>
             {% endfor %}
         </div>
     {% elif not articles %}
-        <div class="alert alert-info text-center my-5 p-4"><h4><i class="fas fa-search me-2"></i>No articles found.</h4><p>Please try a different category or search query.</p></div>
+        {% if query %}
+        <div class="state-card">
+            <div class="state-card-icon"><i class="fas fa-magnifying-glass" aria-hidden="true"></i></div>
+            <h2 class="state-card-title">No results for &ldquo;{{ query|truncate(40) }}&rdquo;</h2>
+            <p class="state-card-text">Try a different search term, or browse by category instead.</p>
+            <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Browse All Articles</a></div>
+        </div>
+        {% else %}
+        <div class="state-card">
+            <div class="state-card-icon"><i class="fas fa-newspaper" aria-hidden="true"></i></div>
+            <h2 class="state-card-title">No articles here yet</h2>
+            <p class="state-card-text">Try a different category, or check back again soon.</p>
+            <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Back to Homepage</a></div>
+        </div>
+        {% endif %}
     {% endif %}
 
     {% if total_pages and total_pages > 1 %}
     <nav aria-label="Page navigation" class="mt-5"><ul class="pagination justify-content-center">
         {% set filter_date_for_url = request.args.get('filter_date') if selected_category == 'All Articles' and request.args.get('filter_date') else None %}
         <li class="page-item page-link-prev-next {% if current_page == 1 %}disabled{% endif %}">
-            <a class="page-link" href="{{ url_for(request.endpoint, page=current_page-1, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) if current_page > 1 else '#' }}">&laquo; Prev</a>
+            <a class="page-link" href="{{ url_for(request.endpoint, page=current_page-1, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) if current_page > 1 else '#' }}" {% if current_page == 1 %}aria-disabled="true" tabindex="-1"{% endif %}>&laquo; Prev</a>
         </li>
         {% set page_window = 1 %}{% set show_first = 1 %}{% set show_last = total_pages %}
-        {% if current_page - page_window > show_first %}<li class="page-item"><a class="page-link" href="{{ url_for(request.endpoint, page=1, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) }}">1</a></li>{% if current_page - page_window > show_first + 1 %}<li class="page-item disabled"><span class="page-link">...</span></li>{% endif %}{% endif %}
+        {% if current_page - page_window > show_first %}<li class="page-item"><a class="page-link" href="{{ url_for(request.endpoint, page=1, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) }}">1</a></li>{% if current_page - page_window > show_first + 1 %}<li class="page-item disabled"><span class="page-link">&hellip;</span></li>{% endif %}{% endif %}
         {% for p in range(1, total_pages + 1) %}{% if p == current_page %}<li class="page-item active" aria-current="page"><span class="page-link">{{ p }}</span></li>{% elif p >= current_page - page_window and p <= current_page + page_window %}<li class="page-item"><a class="page-link" href="{{ url_for(request.endpoint, page=p, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) }}">{{ p }}</a></li>{% endif %}{% endfor %}
-        {% if current_page + page_window < show_last %}{% if current_page + page_window < show_last - 1 %}<li class="page-item disabled"><span class="page-link">...</span></li>{% endif %}<li class="page-item"><a class="page-link" href="{{ url_for(request.endpoint, page=total_pages, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) }}">{{ total_pages }}</a></li>{% endif %}
+        {% if current_page + page_window < show_last %}{% if current_page + page_window < show_last - 1 %}<li class="page-item disabled"><span class="page-link">&hellip;</span></li>{% endif %}<li class="page-item"><a class="page-link" href="{{ url_for(request.endpoint, page=total_pages, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) }}">{{ total_pages }}</a></li>{% endif %}
         <li class="page-item page-link-prev-next {% if current_page == total_pages %}disabled{% endif %}">
-            <a class="page-link" href="{{ url_for(request.endpoint, page=current_page+1, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) if current_page < total_pages else '#' }}">Next &raquo;</a>
+            <a class="page-link" href="{{ url_for(request.endpoint, page=current_page+1, category_name=selected_category if request.endpoint != 'search_results' else None, query=query if request.endpoint == 'search_results' else None, filter_date=filter_date_for_url) if current_page < total_pages else '#' }}" {% if current_page == total_pages %}aria-disabled="true" tabindex="-1"{% endif %}>Next &raquo;</a>
         </li>
     </ul></nav>
     {% endif %}
@@ -2456,6 +2984,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const imageUrl = this.dataset.imageUrl;
                 const description = this.dataset.description;
                 const publishedAt = this.dataset.publishedAt;
+                const btnRef = this;
                 fetch(`{{ url_for('toggle_bookmark', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashId), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2464,20 +2993,19 @@ document.addEventListener('DOMContentLoaded', function () {
                 .then(res => { if (!res.ok) { return res.json().then(err => { throw new Error(err.error || `HTTP error! status: ${res.status}`); }); } return res.json(); })
                 .then(data => {
                     if (data.success) {
-                        this.classList.toggle('active', data.status === 'added');
-                        this.title = data.status === 'added' ? 'Remove Bookmark' : 'Add Bookmark';
-                        const alertPlaceholder = document.getElementById('alert-placeholder');
-                        if(alertPlaceholder) {
-                            const existingAlerts = alertPlaceholder.querySelectorAll('.bookmark-alert');
-                            existingAlerts.forEach(al => bootstrap.Alert.getOrCreateInstance(al)?.close());
-                            const alertDiv = `<div class="alert alert-info alert-dismissible fade show alert-top bookmark-alert" role="alert" style="z-index: 2060;">${data.message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
-                            alertPlaceholder.insertAdjacentHTML('beforeend', alertDiv);
-                            const newAlert = alertPlaceholder.lastChild;
-                            setTimeout(() => { bootstrap.Alert.getOrCreateInstance(newAlert)?.close(); }, 3000);
-                        }
-                    } else { alert('Error: ' + (data.error || 'Could not update bookmark.')); }
+                        const nowActive = data.status === 'added';
+                        btnRef.classList.toggle('active', nowActive);
+                        btnRef.title = nowActive ? 'Remove Bookmark' : 'Add Bookmark';
+                        btnRef.setAttribute('aria-label', (nowActive ? 'Remove bookmark' : 'Add bookmark') + ' for ' + title);
+                        btnRef.classList.remove('is-popping');
+                        void btnRef.offsetWidth;
+                        btnRef.classList.add('is-popping');
+                        BrieflyAI.showToast(data.message, 'success', 3000);
+                    } else {
+                        BrieflyAI.showToast(data.error || 'Could not update bookmark.', 'danger');
+                    }
                 })
-                .catch(err => { console.error("Bookmark error on homepage:", err); alert("Could not update bookmark: " + err.message); });
+                .catch(err => { console.error("Bookmark error on homepage:", err); BrieflyAI.showToast("Could not update bookmark: " + err.message, 'danger'); });
             });
         }
     });
@@ -2485,87 +3013,102 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 {% endblock %}
 """
-
 ARTICLE_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}{{ article.title|truncate(50) if article else "Article" }} - BrieflyAI{% endblock %}
-{% block head_extra %}
-<style>
-    .article-full-content-wrapper { background-color: var(--card-bg); padding: clamp(1rem, 4vw, 2rem); border-radius: var(--border-radius-lg); box-shadow: var(--shadow-md); margin-bottom: 2rem; margin-top: 1rem; }
-    .article-title-main {font-weight: 700; color: var(--text-color); line-height:1.3; font-family: 'Poppins', sans-serif;}
-    .summary-box, .takeaways-box { background-color: rgba(var(--primary-color-rgb), 0.04); border: 1px solid rgba(var(--primary-color-rgb), 0.1); border-radius: var(--border-radius-md); margin: 1.5rem 0; padding: 1.5rem; }
-    body.dark-mode .summary-box, body.dark-mode .takeaways-box { background-color: #2a30422e; }
-    .takeaways-box { border-left: 4px solid var(--secondary-color); }
-    .loader-container { display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 200px; padding: 2rem; color: var(--text-muted-color); }
-    .loader { border: 5px solid var(--light-bg); border-top: 5px solid var(--primary-color); border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 1rem; }
-    .content-text { white-space: pre-wrap; line-height: 1.8; font-size: 1.05rem; }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    .edit-form-container { display: none; } /* Hide edit form by default */
-</style>
-{% endblock %}
 {% block content %}
 {% if not article %}
-    <div class="alert alert-danger text-center my-5 p-4"><h4><i class="fas fa-exclamation-triangle me-2"></i>Article Not Found</h4><p>The article you are looking for could not be found.</p><a href="{{ url_for('index') }}" class="btn btn-primary mt-2">Go to Homepage</a></div>
+    <div class="state-card state-card-danger">
+        <div class="state-card-icon"><i class="fas fa-newspaper" aria-hidden="true"></i></div>
+        <h1 class="state-card-title">Article Not Found</h1>
+        <p class="state-card-text">The article you're looking for may have been removed, or the link may be incorrect.</p>
+        <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Go to Homepage</a></div>
+    </div>
 {% else %}
 <article class="article-full-content-wrapper animate-fade-in">
-    <div class="mb-3 d-flex justify-content-between align-items-center">
-        <a href="{{ previous_list_page }}" class="btn btn-sm btn-outline-secondary"><i class="fas fa-arrow-left me-2"></i>Back to List</a>
-        
+    <div class="mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <a href="{{ previous_list_page }}" class="btn btn-sm btn-outline-secondary"><i class="fas fa-arrow-left me-2" aria-hidden="true"></i>Back to List</a>
+
         <div class="d-flex align-items-center gap-2">
-            
+
             {% if session.get('is_admin') and is_community_article %}
-            <button id="adminDeleteBtn" class="btn btn-sm btn-danger" title="Admin: Delete Post">
-                <i class="fas fa-trash-alt"></i> Delete Post
+            <button type="button" id="adminDeleteBtn" class="btn btn-sm btn-danger" title="Admin: Delete Post">
+                <i class="fas fa-trash-alt" aria-hidden="true"></i> Delete Post
             </button>
             {% endif %}
 
             {% if session.user_id %}
                 {% if is_community_article %}
-                <button id="reportBtn" class="btn btn-sm btn-outline-warning" title="Report this article for review">
-                    <i class="fas fa-flag"></i> Report
+                <button type="button" id="reportBtn" class="btn btn-sm btn-outline-warning" title="Report this article for review">
+                    <i class="fas fa-flag" aria-hidden="true"></i> Report
                 </button>
                 {% endif %}
-                
-                <button id="bookmarkBtn" class="bookmark-btn {% if is_bookmarked %}active{% endif %}" title="{% if is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" data-article-hash-id="{{ article.article_hash_id if is_community_article else article.id }}" data-is-community="{{ 'true' if is_community_article else 'false' }}" data-title="{{ article.title|e }}" data-source-name="{{ (article.author.name if is_community_article and article.author else article.source.name)|e }}" data-image-url="{{ (article.image_url if is_community_article else article.urlToImage)|e }}" data-description="{{ (article.description if article.description else '')|e }}" data-published-at="{{ (article.published_at.isoformat() if is_community_article and article.published_at else (article.publishedAt if not is_community_article and article.publishedAt else ''))|e }}"><i class="fa-solid fa-bookmark"></i></button>
+
+                <button type="button" id="bookmarkBtn" class="bookmark-btn {% if is_bookmarked %}active{% endif %}" title="{% if is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for this article" data-article-hash-id="{{ article.article_hash_id if is_community_article else article.id }}" data-is-community="{{ 'true' if is_community_article else 'false' }}" data-title="{{ article.title|e }}" data-source-name="{{ (article.author.name if is_community_article and article.author else article.source.name)|e }}" data-image-url="{{ (article.image_url if is_community_article else article.urlToImage)|e }}" data-description="{{ (article.description if article.description else '')|e }}" data-published-at="{{ (article.published_at.isoformat() if is_community_article and article.published_at else (article.publishedAt if not is_community_article and article.publishedAt else ''))|e }}"><i class="fa-solid fa-bookmark" aria-hidden="true"></i></button>
             {% endif %}
         </div>
     </div>
 
-    <h1 class="mb-2 article-title-main display-6">{{ article.title }}</h1>
-    <div class="article-meta-detailed d-flex align-items-center flex-wrap gap-3 text-muted small"><span class="meta-item" title="Source"><i class="fas fa-{{ 'user-edit' if is_community_article else 'building' }}"></i> {{ article.author.name if is_community_article and article.author else article.source.name }}</span><span class="meta-item" title="Published Date"><i class="far fa-calendar-alt"></i> {{ (article.published_at | to_ist if is_community_article else (article.publishedAt | to_ist if article.publishedAt else 'N/A')) }}</span></div>
+    <h1 class="mb-2 article-title-main">{{ article.title }}</h1>
+    <div class="article-meta-detailed d-flex align-items-center flex-wrap gap-2 text-muted small">
+        <span class="meta-item" title="Source"><i class="fas fa-{{ 'user-edit' if is_community_article else 'building' }}" aria-hidden="true"></i> {{ article.author.name if is_community_article and article.author else article.source.name }}</span>
+        <span class="meta-item" title="Published Date"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (article.published_at | to_ist if is_community_article else (article.publishedAt | to_ist if article.publishedAt else 'N/A')) }}</span>
+    </div>
     {% set image_to_display = article.image_url if is_community_article else article.urlToImage %}
-    {% if image_to_display %}<img src="{{ image_to_display }}" alt="{{ article.title|truncate(50) }}" class="img-fluid rounded my-3 shadow-sm">{% endif %}
-    
-    <div id="contentLoader" class="loader-container my-4 {% if is_community_article %}d-none{% endif %}"><div class="loader"></div><div>Analyzing article and generating summary...</div></div>
+    {% if image_to_display %}
+    <div class="hero-image-wrap">
+        <img src="{{ image_to_display }}" alt="{{ article.title|truncate(50) }}" class="hero-image" loading="eager" decoding="async">
+        <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+    </div>
+    {% endif %}
+
+    <div id="contentLoader" class="ai-skeleton my-4 {% if is_community_article %}d-none{% endif %}" aria-hidden="true">
+        <div class="ai-skeleton-box">
+            <div class="ai-skeleton-label"></div>
+            <div class="ai-skeleton-line w-100"></div>
+            <div class="ai-skeleton-line w-95"></div>
+            <div class="ai-skeleton-line w-80"></div>
+        </div>
+        <div class="ai-skeleton-box mb-2">
+            <div class="ai-skeleton-label"></div>
+            <div class="ai-skeleton-line w-90"></div>
+            <div class="ai-skeleton-line w-70"></div>
+        </div>
+        <p class="ai-skeleton-caption"><i class="fas fa-brain fa-fw" aria-hidden="true"></i> Generating AI summary&hellip;</p>
+    </div>
     <div id="articleAnalysisContainer">
     {% if is_community_article %}
-        {% if article.groq_summary %}<div class="summary-box my-3"><h5><i class="fas fa-book-open me-2"></i>AI Summary</h5><p class="mb-0">{{ article.groq_summary|replace('\\n', '<br>')|safe }}</p></div>{% endif %}
-        {% if article.parsed_takeaways %}<div class="takeaways-box my-3"><h5><i class="fas fa-list-check me-2"></i>AI Key Takeaways</h5><ul>{% for takeaway in article.parsed_takeaways %}<li>{{ takeaway }}</li>{% endfor %}</ul></div>{% endif %}
-        <hr class="my-4"><h4 class="mb-3">Full Article Content</h4><div class="content-text">{{ article.full_text }}</div>
+        {% if article.groq_summary %}<div class="summary-box my-3"><h2><i class="fas fa-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">{{ article.groq_summary|replace('\\n', '<br>')|safe }}</p></div>{% endif %}
+        {% if article.parsed_takeaways %}<div class="takeaways-box my-3"><h2><i class="fas fa-list-check me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>{% for takeaway in article.parsed_takeaways %}<li>{{ takeaway }}</li>{% endfor %}</ul></div>{% endif %}
+        <hr class="my-4"><h2 class="content-divider-heading">Full Article Content</h2><div class="content-text">{{ article.full_text }}</div>
     {% else %}<div id="apiArticleContent"></div>{% endif %}
     </div>
 
     <section class="comment-section mt-5" id="comment-section">
-        <h3 class="mb-4">Community Discussion (<span id="comment-count">{{ total_comment_count }}</span>)</h3>
-        
+        <h2 class="mb-4">Community Discussion (<span id="comment-count">{{ total_comment_count }}</span>)</h2>
+
         <div id="comments-list">
             {% for comment in comments %}
                 {% include '_COMMENT_TEMPLATE' %}
             {% else %}
-                <p id="no-comments-msg" class="text-muted mt-3">No comments yet. Be the first to share your thoughts!</p>
+                <p id="no-comments-msg" class="text-muted mt-3"><i class="far fa-comment-dots me-2" aria-hidden="true"></i>No comments yet. Be the first to share your thoughts!</p>
             {% endfor %}
         </div>
 
         {% if session.user_id %}
             <div class="add-comment-form mt-4 pt-4 border-top">
-                <h5 class="mb-3">Leave a Comment</h5>
+                <h3 class="comment-form-heading">Leave a Comment</h3>
                 <form id="comment-form">
+                    <label class="visually-hidden" for="comment-content">Write a comment</label>
                     <div class="mb-3"><textarea class="form-control" id="comment-content" name="content" rows="4" placeholder="Share your insights..." required></textarea></div>
                     <button type="submit" class="btn btn-primary">Post Comment</button>
                 </form>
             </div>
         {% else %}
-            <div class="alert alert-light mt-4 text-center">Please <a href="{{ url_for('login', next=request.url) }}" class="fw-bold">log in</a> to join the discussion.</div>
+            <div class="comment-login-prompt">
+                <i class="fas fa-comments" aria-hidden="true"></i>
+                <p class="mb-0">Please <a href="{{ url_for('login', next=request.url) }}" class="fw-bold">log in</a> to join the discussion.</p>
+            </div>
         {% endif %}
     </section>
 </article>
@@ -2582,13 +3125,18 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const adminDeleteBtn = document.getElementById('adminDeleteBtn');
         if (adminDeleteBtn) {
-            adminDeleteBtn.addEventListener('click', function() {
-                if (!confirm('ADMIN ACTION: Are you sure you want to permanently delete this community post? This action cannot be undone.')) {
-                    return;
-                }
+            adminDeleteBtn.addEventListener('click', async function() {
+                const confirmed = await BrieflyAI.confirmAction({
+                    title: 'Delete this post?',
+                    message: 'This will permanently delete the community post and cannot be undone.',
+                    confirmText: 'Delete Post',
+                    danger: true
+                });
+                if (!confirmed) return;
+
                 this.disabled = true;
-                this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deleting...';
-                
+                this.innerHTML = '<i class="fas fa-spinner fa-spin" aria-hidden="true"></i> Deleting...';
+
                 fetch(`/delete_community_article/${articleHashIdGlobal}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
@@ -2596,19 +3144,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 .then(res => res.json().then(data => ({ ok: res.ok, data })))
                 .then(({ ok, data }) => {
                     if (ok && data.success) {
-                        // On successful deletion, redirect to the Community Hub
                         window.location.href = data.redirect_url;
                     } else {
-                        alert('Deletion failed: ' + (data.error || 'Unknown error'));
+                        BrieflyAI.showToast('Deletion failed: ' + (data.error || 'Unknown error'), 'danger');
                         this.disabled = false;
-                        this.innerHTML = '<i class="fas fa-trash-alt"></i> Delete Post';
+                        this.innerHTML = '<i class="fas fa-trash-alt" aria-hidden="true"></i> Delete Post';
                     }
                 })
                 .catch(err => {
                     console.error("Admin delete error:", err);
-                    alert("A network error occurred. Could not delete the post.");
+                    BrieflyAI.showToast("A network error occurred. Could not delete the post.", 'danger');
                     this.disabled = false;
-                    this.innerHTML = '<i class="fas fa-trash-alt"></i> Delete Post';
+                    this.innerHTML = '<i class="fas fa-trash-alt" aria-hidden="true"></i> Delete Post';
                 });
             });
         }
@@ -2616,7 +3163,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!isCommunityArticle) {
             const contentLoader = document.getElementById('contentLoader');
             const apiArticleContent = document.getElementById('apiArticleContent');
-            
+
             fetch(`{{ url_for('get_article_content_json', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashIdGlobal))
                 .then(response => { if (!response.ok) { throw new Error(`Network error, status: ${response.status}`); } return response.json(); })
                 .then(data => {
@@ -2628,11 +3175,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (analysis) {
                         if (analysis.error) { html += `<div class="alert alert-secondary small p-3 mt-3">AI analysis could not be performed: ${analysis.error}</div>`; }
                         else {
-                            if (analysis.groq_summary) { html += `<div class="summary-box my-3"><h5><i class="fas fa-book-open me-2"></i>AI Summary</h5><p class="mb-0">${analysis.groq_summary.replace(/\\n/g, '<br>')}</p></div>`; }
-                            if (analysis.groq_takeaways && analysis.groq_takeaways.length > 0) { html += `<div class="takeaways-box my-3"><h5><i class="fas fa-list-check me-2"></i>AI Key Takeaways</h5><ul>${analysis.groq_takeaways.map(t => `<li>${String(t)}</li>`).join('')}</ul></div>`; }
+                            if (analysis.groq_summary) { html += `<div class="summary-box my-3"><h2><i class="fas fa-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">${analysis.groq_summary.replace(/\\n/g, '<br>')}</p></div>`; }
+                            if (analysis.groq_takeaways && analysis.groq_takeaways.length > 0) { html += `<div class="takeaways-box my-3"><h2><i class="fas fa-list-check me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>${analysis.groq_takeaways.map(t => `<li>${String(t)}</li>`).join('')}</ul></div>`; }
                         }
                     }
-                    if (articleUrl) { html += `<hr class="my-4"><a href="${articleUrl}" class="btn btn-outline-primary mt-3 mb-3" target="_blank" rel="noopener noreferrer">Read Original Article at ${articleSourceName} <i class="fas fa-external-link-alt ms-1"></i></a>`; }
+                    if (articleUrl) { html += `<hr class="my-4"><a href="${articleUrl}" class="btn btn-outline-primary mt-3 mb-3" target="_blank" rel="noopener noreferrer">Read Original Article at ${articleSourceName} <i class="fas fa-external-link-alt ms-1" aria-hidden="true"></i></a>`; }
                     apiArticleContent.innerHTML = html;
                 })
                 .catch(error => { console.error("Failed to load article content:", error); if (apiArticleContent) { apiArticleContent.innerHTML = `<div class="alert alert-danger small p-3">Failed to load article analysis. Details: ${error.message}</div>`; } })
@@ -2641,7 +3188,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const commentSection = document.getElementById('comment-section');
         if (commentSection && isUserLoggedIn) {
-            
+
             const handleCommentSubmit = (formElement) => {
                 const content = formElement.querySelector('textarea[name="content"]').value;
                 const parentId = formElement.querySelector('input[name="parent_id"]')?.value || null;
@@ -2674,59 +3221,84 @@ document.addEventListener('DOMContentLoaded', function () {
                         formElement.reset();
                     } else { throw new Error(data.error || 'Could not post comment.'); }
                 })
-                .catch(err => { console.error("Comment submission error:", err); alert("Error: " + err.message); })
+                .catch(err => { console.error("Comment submission error:", err); BrieflyAI.showToast("Error: " + err.message, 'danger'); })
                 .finally(() => { submitButton.disabled = false; submitButton.innerHTML = originalButtonText; });
             };
 
             const updateReactionUI = (commentId, reactions, userReaction) => {
                 const summaryContainer = document.getElementById(`reaction-summary-${commentId}`);
-                if (!summaryContainer) return;
-                let summaryHTML = '';
-                if (reactions) {
-                    for (const [emoji, count] of Object.entries(reactions)) {
-                        if (count > 0) {
-                            const userReactedClass = (userReaction === emoji) ? 'user-reacted' : '';
-                            summaryHTML += `<div class="reaction-pill ${userReactedClass}" data-emoji="${emoji}"><span class="emoji">${emoji}</span> <span class="count">${count}</span></div>`;
+                if (summaryContainer) {
+                    let summaryHTML = '';
+                    if (reactions) {
+                        for (const [emoji, count] of Object.entries(reactions)) {
+                            if (count > 0) {
+                                const userReactedClass = (userReaction === emoji) ? 'user-reacted' : '';
+                                summaryHTML += `<div class="reaction-pill ${userReactedClass}" data-emoji="${emoji}"><span class="emoji">${emoji}</span><span class="count">${count}</span></div>`;
+                            }
                         }
                     }
+                    summaryContainer.innerHTML = summaryHTML;
                 }
-                summaryContainer.innerHTML = summaryHTML;
+                const box = document.getElementById(`reaction-box-${commentId}`);
+                if (box) {
+                    box.querySelectorAll('.reaction-emoji').forEach(function (btn) {
+                        btn.classList.toggle('is-selected', btn.dataset.emoji === userReaction);
+                    });
+                }
             };
 
-            commentSection.addEventListener('click', function(e) {
+            const closeAllReactionBoxes = () => {
+                document.querySelectorAll('.reaction-box.show').forEach(box => box.classList.remove('show'));
+                document.querySelectorAll('.react-btn[aria-expanded="true"]').forEach(btn => btn.setAttribute('aria-expanded', 'false'));
+            };
+
+            commentSection.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    const openBtn = document.querySelector('.react-btn[aria-expanded="true"]');
+                    closeAllReactionBoxes();
+                    if (openBtn) openBtn.focus();
+                }
+            });
+
+            commentSection.addEventListener('click', async function(e) {
                 const target = e.target;
-                
+
                 const deleteBtn = target.closest('.delete-btn');
                 if (deleteBtn) {
                     e.preventDefault();
                     const commentId = deleteBtn.dataset.commentId;
-                    if (confirm('Are you sure you want to delete this comment? All replies will also be removed.')) {
-                        fetch(`/delete_comment/${commentId}`, { method: 'POST' })
-                            .then(res => {
-                                if (!res.ok) { return res.json().then(err => { throw new Error(err.error) }); }
-                                return res.json();
-                            })
-                            .then(data => {
-                                if (data.success) {
-                                    const commentElement = document.getElementById(`comment-${commentId}`);
-                                    const repliesCount = commentElement.querySelectorAll('.comment-thread').length;
-                                    const totalCommentsToRemove = 1 + repliesCount;
-                                    
-                                    const countEl = document.getElementById('comment-count');
-                                    countEl.textContent = Math.max(0, parseInt(countEl.textContent) - totalCommentsToRemove);
-                                    
-                                    commentElement.style.transition = 'opacity 0.5s ease';
-                                    commentElement.style.opacity = '0';
-                                    setTimeout(() => commentElement.remove(), 500);
-                                } else {
-                                    alert('Error: ' + data.error);
-                                }
-                            })
-                            .catch(err => {
-                                console.error("Delete error:", err);
-                                alert("Could not delete comment: " + err.message);
-                            });
-                    }
+                    const confirmed = await BrieflyAI.confirmAction({
+                        title: 'Delete this comment?',
+                        message: 'All replies will also be removed. This cannot be undone.',
+                        confirmText: 'Delete',
+                        danger: true
+                    });
+                    if (!confirmed) return;
+                    fetch(`/delete_comment/${commentId}`, { method: 'POST' })
+                        .then(res => {
+                            if (!res.ok) { return res.json().then(err => { throw new Error(err.error) }); }
+                            return res.json();
+                        })
+                        .then(data => {
+                            if (data.success) {
+                                const commentElement = document.getElementById(`comment-${commentId}`);
+                                const repliesCount = commentElement.querySelectorAll('.comment-thread').length;
+                                const totalCommentsToRemove = 1 + repliesCount;
+
+                                const countEl = document.getElementById('comment-count');
+                                countEl.textContent = Math.max(0, parseInt(countEl.textContent) - totalCommentsToRemove);
+
+                                commentElement.style.transition = 'opacity 0.4s ease';
+                                commentElement.style.opacity = '0';
+                                setTimeout(() => commentElement.remove(), 400);
+                            } else {
+                                BrieflyAI.showToast('Error: ' + data.error, 'danger');
+                            }
+                        })
+                        .catch(err => {
+                            console.error("Delete error:", err);
+                            BrieflyAI.showToast("Could not delete comment: " + err.message, 'danger');
+                        });
                     return;
                 }
 
@@ -2738,7 +3310,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     const commentBody = commentThread.querySelector('.comment-body');
                     commentBody.querySelector('.comment-content').style.display = 'none';
                     commentBody.querySelector('.comment-actions').style.display = 'none';
-                    commentBody.querySelector('.edit-form-container').style.display = 'block';
+                    const editContainer = commentBody.querySelector('.edit-form-container');
+                    editContainer.style.display = 'block';
+                    editContainer.querySelector('textarea').focus();
                     return;
                 }
 
@@ -2765,7 +3339,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     return;
                 }
-                
+
                 const reactBtn = target.closest('.react-btn');
                 if (reactBtn) {
                     e.preventDefault();
@@ -2773,8 +3347,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     const reactionBox = document.getElementById(`reaction-box-${commentId}`);
                     if (reactionBox) {
                         const isShown = reactionBox.classList.contains('show');
-                        document.querySelectorAll('.reaction-box').forEach(box => box.classList.remove('show'));
-                        if (!isShown) reactionBox.classList.add('show');
+                        closeAllReactionBoxes();
+                        if (!isShown) {
+                            reactionBox.classList.add('show');
+                            reactBtn.setAttribute('aria-expanded', 'true');
+                        }
                     }
                     return;
                 }
@@ -2784,22 +3361,22 @@ document.addEventListener('DOMContentLoaded', function () {
                     e.preventDefault();
                     const commentId = reactionEmoji.dataset.commentId;
                     const emoji = reactionEmoji.dataset.emoji;
-                    reactionEmoji.closest('.reaction-box').classList.remove('show');
+                    closeAllReactionBoxes();
                     fetch(`/vote_comment/${commentId}`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
                         body: JSON.stringify({ emoji: emoji })
                     })
                     .then(res => res.json())
                     .then(data => {
-                        if (data.success) { updateReactionUI(commentId, data.reactions, data.user_reaction); } 
+                        if (data.success) { updateReactionUI(commentId, data.reactions, data.user_reaction); }
                         else { throw new Error(data.error || "Failed to vote."); }
                     })
-                    .catch(err => { console.error("Reaction error:", err); alert("Error: " + err.message); });
+                    .catch(err => { console.error("Reaction error:", err); BrieflyAI.showToast("Error: " + err.message, 'danger'); });
                     return;
                 }
-                
+
                 if (!target.closest('.reaction-box') && !target.closest('.react-btn')) {
-                    document.querySelectorAll('.reaction-box.show').forEach(box => box.classList.remove('show'));
+                    closeAllReactionBoxes();
                 }
             });
 
@@ -2830,16 +3407,16 @@ document.addEventListener('DOMContentLoaded', function () {
                             commentBody.querySelector('.comment-actions').style.display = 'flex';
                             form.closest('.edit-form-container').style.display = 'none';
                         } else {
-                            alert('Error: ' + data.error);
+                            BrieflyAI.showToast('Error: ' + data.error, 'danger');
                         }
                     })
                     .catch(err => {
                         console.error("Edit error:", err);
-                        alert("Could not save changes: " + err.message);
+                        BrieflyAI.showToast("Could not save changes: " + err.message, 'danger');
                     });
                     return;
                 }
-                
+
                 if (e.target.id === 'comment-form' || e.target.matches('.reply-form')) {
                     handleCommentSubmit(e.target);
                 }
@@ -2848,12 +3425,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const reportBtn = document.getElementById('reportBtn');
         if (reportBtn) {
-            reportBtn.addEventListener('click', function() {
-                if (!confirm('Are you sure you want to report this article for review?')) {
-                    return;
-                }
+            reportBtn.addEventListener('click', async function() {
+                const confirmed = await BrieflyAI.confirmAction({
+                    title: 'Report this article?',
+                    message: 'This will flag the article for review by our moderators.',
+                    confirmText: 'Report',
+                    danger: true
+                });
+                if (!confirmed) return;
+
                 this.disabled = true;
-                this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Reporting...';
+                this.innerHTML = '<i class="fas fa-spinner fa-spin" aria-hidden="true"></i> Reporting...';
                 fetch(`/report_article/${articleHashIdGlobal}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
@@ -2861,19 +3443,19 @@ document.addEventListener('DOMContentLoaded', function () {
                 .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
                 .then(({ ok, status, data }) => {
                     if (ok) {
-                        this.innerHTML = '<i class="fas fa-check"></i> Reported';
-                        alert(data.message);
+                        this.innerHTML = '<i class="fas fa-check" aria-hidden="true"></i> Reported';
+                        BrieflyAI.showToast(data.message, 'success');
                     } else {
                         this.disabled = false;
-                        this.innerHTML = '<i class="fas fa-flag"></i> Report';
-                        alert('Error: ' + data.error);
+                        this.innerHTML = '<i class="fas fa-flag" aria-hidden="true"></i> Report';
+                        BrieflyAI.showToast('Error: ' + data.error, 'danger');
                     }
                 })
                 .catch(err => {
                     console.error("Report error:", err);
-                    alert("A network error occurred. Please try again.");
+                    BrieflyAI.showToast("A network error occurred. Please try again.", 'danger');
                     this.disabled = false;
-                    this.innerHTML = '<i class="fas fa-flag"></i> Report';
+                    this.innerHTML = '<i class="fas fa-flag" aria-hidden="true"></i> Report';
                 });
             });
         }
@@ -2888,15 +3470,22 @@ document.addEventListener('DOMContentLoaded', function () {
                 const imageUrl = this.dataset.imageUrl;
                 const description = this.dataset.description;
                 const publishedAt = this.dataset.publishedAt;
+                const btnRef = this;
                 fetch(`{{ url_for('toggle_bookmark', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_community_article: isCommunity, title, source_name: sourceName, image_url: imageUrl, description, published_at: publishedAt }) })
                 .then(res => res.json())
                 .then(data => {
                     if (data.success) {
-                        this.classList.toggle('active', data.status === 'added');
-                        this.title = data.status === 'added' ? 'Remove Bookmark' : 'Add Bookmark';
-                    } else { alert('Error: ' + (data.error || 'Could not update bookmark.')); }
+                        const nowActive = data.status === 'added';
+                        btnRef.classList.toggle('active', nowActive);
+                        btnRef.title = nowActive ? 'Remove Bookmark' : 'Add Bookmark';
+                        btnRef.setAttribute('aria-label', (nowActive ? 'Remove bookmark' : 'Add bookmark') + ' for this article');
+                        btnRef.classList.remove('is-popping');
+                        void btnRef.offsetWidth;
+                        btnRef.classList.add('is-popping');
+                        BrieflyAI.showToast(data.message, 'success', 3000);
+                    } else { BrieflyAI.showToast(data.error || 'Could not update bookmark.', 'danger'); }
                 })
-                .catch(err => { console.error("Bookmark error:", err); alert("Could not update bookmark: " + err.message); });
+                .catch(err => { console.error("Bookmark error:", err); BrieflyAI.showToast("Could not update bookmark: " + err.message, 'danger'); });
             });
         }
         {% endif %}
@@ -2907,72 +3496,6 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 {% endblock %}
 """
-
-_COMMENT_TEMPLATE = """
-<div class="comment-thread" id="comment-{{ comment.id }}">
-    <div class="comment-container">
-        <div class="comment-avatar" title="{{ comment.author.name if comment.author else 'Unknown' }}">{{ (comment.author.name[0]|upper if comment.author and comment.author.name else 'U') }}</div>
-        <div class="comment-body">
-            <div class="comment-header">
-                <a href="{{ url_for('public_profile', username=comment.author.username) }}" class="comment-author text-decoration-none">{{ comment.author.name if comment.author else 'Anonymous' }}</a>
-                <span class="comment-date">{{ comment.timestamp | to_ist }}</span>
-            </div>
-
-            {# This is the main content paragraph #}
-            <p class="comment-content mb-2">{{ comment.content }}</p>
-
-            {# NEW: This is the hidden form for editing the comment #}
-            <div class="edit-form-container" style="display:none;">
-                <form class="edit-comment-form">
-                    <textarea class="form-control form-control-sm mb-2" name="content" rows="3" required>{{ comment.content }}</textarea>
-                    <div class="d-flex justify-content-end gap-2">
-                        <button type="button" class="btn btn-sm btn-outline-secondary cancel-edit-btn">Cancel</button>
-                        <button type="submit" class="btn btn-sm btn-primary">Save Changes</button>
-                    </div>
-                </form>
-            </div>
-            
-            {% if session.user_id %}
-            <div class="comment-actions">
-                <div class="reaction-box" id="reaction-box-{{ comment.id }}">
-                    {% for emoji in ['👍', '❤️', '😂', '😮', '😢', '😠'] %}
-                        <span class="reaction-emoji" data-emoji="{{ emoji }}" data-comment-id="{{ comment.id }}" title="{{ emoji }}">{{ emoji }}</span>
-                    {% endfor %}
-                </div>
-                <button class="react-btn" data-comment-id="{{ comment.id }}" title="React"><i class="far fa-smile"></i> React</button>
-                <button class="reply-btn" data-comment-id="{{ comment.id }}" title="Reply"><i class="fas fa-reply"></i> Reply</button>
-                
-                {# NEW: Edit and Delete buttons, only visible to the comment owner #}
-                {% if session.user_id == comment.user_id %}
-                    <button class="edit-btn" data-comment-id="{{ comment.id }}" title="Edit"><i class="fas fa-pencil-alt"></i> Edit</button>
-                    <button class="delete-btn" data-comment-id="{{ comment.id }}" title="Delete"><i class="fas fa-trash-alt"></i> Delete</button>
-                {% endif %}
-            </div>
-            <div class="reply-form-container" id="reply-form-container-{{ comment.id }}" style="display:none;">
-                <form class="reply-form">
-                    <input type="hidden" name="parent_id" value="{{ comment.id }}">
-                    <div class="mb-2"><textarea class="form-control form-control-sm" name="content" rows="2" placeholder="Write a reply..." required></textarea></div>
-                    <div class="d-flex justify-content-end gap-2">
-                        <button type="button" class="btn btn-sm btn-outline-secondary cancel-reply-btn">Cancel</button>
-                        <button type="submit" class="btn btn-sm btn-primary">Post Reply</button>
-                    </div>
-                </form>
-            </div>
-            {% endif %}
-
-            <div class="reaction-summary" id="reaction-summary-{{ comment.id }}">
-                {# Reaction pills will be dynamically inserted here by JS #}
-            </div>
-        </div>
-    </div>
-    <div class="comment-replies" id="replies-of-{{ comment.id }}">
-        {% for comment in comment.replies %}
-            {% include '_COMMENT_TEMPLATE' %}
-        {% endfor %}
-    </div>
-</div>
-"""
-
 LOGIN_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}Login - BrieflyAI{% endblock %}
@@ -2981,34 +3504,27 @@ LOGIN_HTML_TEMPLATE = """
 {% block content %}
 <div class="auth-card animate-fade-in">
     <div class="auth-header">
-        <div class="brand-icon"><i class="fas fa-bolt-lightning"></i></div>
-        <h2>Welcome Back to BrieflyAI</h2>
+        <div class="icon"><i class="fas fa-bolt-lightning" aria-hidden="true"></i></div>
+        <h1>Welcome Back to BrieflyAI</h1>
     </div>
     <div class="auth-body">
-        <form method="POST" action="{{ url_for('login', next=request.args.get('next')) }}">
+        <form method="POST" action="{{ url_for('login', next=request.args.get('next')) }}" id="loginForm">
             <div class="mb-3">
                 <label for="username" class="form-label fw-medium">Username</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-user input-icon"></i>
-                    <input type="text" class="form-control" id="username" name="username" required placeholder="e.g. user123">
+                    <i class="fas fa-user input-icon" aria-hidden="true"></i>
+                    <input type="text" class="form-control" id="username" name="username" required placeholder="e.g. user123" autocomplete="username">
                 </div>
             </div>
             <div class="mb-4">
                 <label for="password" class="form-label fw-medium">Password</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-lock input-icon"></i>
-                    <input type="password" class="form-control" id="password" name="password" required placeholder="••••••••">
+                    <i class="fas fa-lock input-icon" aria-hidden="true"></i>
+                    <input type="password" class="form-control" id="password" name="password" required placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password">
                 </div>
             </div>
-            <button type="submit" class="btn btn-primary w-100">Sign In</button>
+            <button type="submit" class="btn btn-primary w-100" id="loginSubmitBtn">Sign In</button>
         </form>
-        
-        <div class="social-login-divider">Or</div>
-
-        <div class="social-login-buttons d-flex gap-3">
-            <a href="#" class="btn w-100"><i class="fab fa-google"></i> Google</a>
-            <a href="#" class="btn w-100"><i class="fab fa-facebook"></i> Facebook</a>
-        </div>
     </div>
     <div class="auth-footer">
         <p class="mb-0 small">
@@ -3016,6 +3532,20 @@ LOGIN_HTML_TEMPLATE = """
         </p>
     </div>
 </div>
+{% endblock %}
+{% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const form = document.getElementById('loginForm');
+    const btn = document.getElementById('loginSubmitBtn');
+    if (form && btn) {
+        form.addEventListener('submit', function () {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Signing in...';
+        });
+    }
+});
+</script>
 {% endblock %}
 """
 
@@ -3027,33 +3557,33 @@ REGISTER_HTML_TEMPLATE = """
 {% block content %}
 <div class="auth-card animate-fade-in">
      <div class="auth-header">
-        <div class="brand-icon"><i class="fas fa-user-plus"></i></div>
-        <h2>Create Your Account</h2>
+        <div class="icon"><i class="fas fa-user-plus" aria-hidden="true"></i></div>
+        <h1>Create Your Account</h1>
     </div>
     <div class="auth-body">
-        <form method="POST" action="{{ url_for('register') }}">
+        <form method="POST" action="{{ url_for('register') }}" id="registerForm">
              <div class="mb-3">
                 <label for="name" class="form-label fw-medium">Full Name</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-id-card input-icon"></i>
-                    <input type="text" class="form-control" id="name" name="name" required placeholder="e.g. John Doe">
+                    <i class="fas fa-id-card input-icon" aria-hidden="true"></i>
+                    <input type="text" class="form-control" id="name" name="name" required placeholder="e.g. John Doe" autocomplete="name">
                 </div>
             </div>
             <div class="mb-3">
                 <label for="username" class="form-label fw-medium">Username</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-user input-icon"></i>
-                    <input type="text" class="form-control" id="username" name="username" required placeholder="e.g. johndoe (min 3 chars)">
+                    <i class="fas fa-user input-icon" aria-hidden="true"></i>
+                    <input type="text" class="form-control" id="username" name="username" required minlength="3" placeholder="e.g. johndoe (min 3 chars)" autocomplete="username">
                 </div>
             </div>
             <div class="mb-4">
                 <label for="password" class="form-label fw-medium">Password</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-lock input-icon"></i>
-                    <input type="password" class="form-control" id="password" name="password" required placeholder="min 6 chars">
+                    <i class="fas fa-lock input-icon" aria-hidden="true"></i>
+                    <input type="password" class="form-control" id="password" name="password" required minlength="6" placeholder="min 6 chars" autocomplete="new-password">
                 </div>
             </div>
-            <button type="submit" class="btn btn-primary w-100">Create Account</button>
+            <button type="submit" class="btn btn-primary w-100" id="registerSubmitBtn">Create Account</button>
         </form>
     </div>
     <div class="auth-footer">
@@ -3063,40 +3593,53 @@ REGISTER_HTML_TEMPLATE = """
     </div>
 </div>
 {% endblock %}
+{% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const form = document.getElementById('registerForm');
+    const btn = document.getElementById('registerSubmitBtn');
+    if (form && btn) {
+        form.addEventListener('submit', function () {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Creating account...';
+        });
+    }
+});
+</script>
+{% endblock %}
 """
-
 PROFILE_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}{{ user.name }}'s Profile - BrieflyAI{% endblock %}
 {% block content %}
 <div class="profile-header-card animate-fade-in">
     <div class="profile-avatar-wrapper">
-        <div class="profile-avatar">{{ user.name[0]|upper }}</div>
+        <div class="profile-avatar" aria-hidden="true">{{ user.name[0]|upper }}</div>
     </div>
-    <h2>{{ user.name }}</h2>
+    <h1>{{ user.name }}</h1>
     <p class="username">@{{ user.username }}</p>
     <p class="small text-muted mb-0">Joined: {{ user.created_at | to_ist }}</p>
     <div class="profile-stats">
-        <div class="stat-item">
-            <div class="icon"><i class="fas fa-feather-pointed"></i></div>
+        <button type="button" class="stat-item" data-target-tab="posted-tab" aria-label="View articles you've posted">
+            <div class="icon"><i class="fas fa-pen-to-square" aria-hidden="true"></i></div>
             <div class="count">{{ posted_articles|length }}</div>
             <div class="label">Articles Posted</div>
-        </div>
-        <div class="stat-item">
-            <div class="icon"><i class="fas fa-bookmark"></i></div>
+        </button>
+        <button type="button" class="stat-item" data-target-tab="bookmarks-tab" aria-label="View your bookmarks">
+            <div class="icon"><i class="fas fa-bookmark" aria-hidden="true"></i></div>
             <div class="count">{{ bookmarks_pagination.total if bookmarks_pagination else 0 }}</div>
             <div class="label">Bookmarks</div>
-        </div>
+        </button>
     </div>
 </div>
 
 <div class="mt-4 animate-fade-in" style="animation-delay: 0.1s;">
     <ul class="nav nav-tabs profile-tabs nav-fill mb-4" id="profileTab" role="tablist">
         <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="bookmarks-tab" data-bs-toggle="tab" data-bs-target="#bookmarks-content" type="button" role="tab" aria-controls="bookmarks-content" aria-selected="true"><i class="fas fa-bookmark me-2"></i>My Bookmarks</button>
+            <button class="nav-link active" id="bookmarks-tab" data-bs-toggle="tab" data-bs-target="#bookmarks-content" type="button" role="tab" aria-controls="bookmarks-content" aria-selected="true"><i class="fas fa-bookmark me-2" aria-hidden="true"></i>My Bookmarks</button>
         </li>
         <li class="nav-item" role="presentation">
-            <button class="nav-link" id="posted-tab" data-bs-toggle="tab" data-bs-target="#posted-content" type="button" role="tab" aria-controls="posted-content" aria-selected="false"><i class="fas fa-feather-alt me-2"></i>My Articles</button>
+            <button class="nav-link" id="posted-tab" data-bs-toggle="tab" data-bs-target="#posted-content" type="button" role="tab" aria-controls="posted-content" aria-selected="false"><i class="fas fa-pen-to-square me-2" aria-hidden="true"></i>My Articles</button>
         </li>
     </ul>
     <div class="tab-content" id="profileTabContent">
@@ -3105,38 +3648,40 @@ PROFILE_HTML_TEMPLATE = """
             <div class="row g-4">
                 {% for art in bookmarked_articles %}
                 <div class="col-md-6 col-lg-4 d-flex">
-                    <article class="article-card d-flex flex-column w-100">
-                        <div class="article-image-container">
-                            <a href="{{ art.article_url }}"><img src="{{ art.urlToImage if art.urlToImage else 'https://via.placeholder.com/400x220/EEEEEE/AAAAAA?text=No+Image' }}" class="article-image" alt="{{ art.title|truncate(50) }}"></a>
+                    <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ (loop.index0 * 0.05)|round(2) }}s">
+                        <div class="article-image-container {% if not art.urlToImage %}img-fallback{% endif %}">
+                            <a href="{{ art.article_url }}" tabindex="-1" aria-hidden="true">{% if art.urlToImage %}<img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
+                            <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
                             {% if art.is_stale_bookmark %}<span class="badge bg-secondary position-absolute top-0 end-0 m-2">Cached Bookmark</span>{% endif %}
                         </div>
                         <div class="article-body d-flex flex-column">
-                            <h5 class="article-title mb-2"><a href="{{ art.article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h5>
+                            <h3 class="article-title mb-2"><a href="{{ art.article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
                             <div class="article-meta small mb-2">
-                                <span class="meta-item text-muted"><i class="fas fa-{{ 'user-edit' if art.is_community_article else 'building' }}"></i> {{ art.source.name|truncate(20) }}</span>
-                                <span class="meta-item text-muted"><i class="far fa-calendar-alt"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
+                                <span class="meta-item text-muted"><i class="fas fa-{{ 'user-edit' if art.is_community_article else 'building' }}" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
+                                <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                             </div>
                             <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                            <a href="{{ art.article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small"></i></a>
+                            <a href="{{ art.article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
                         </div>
                     </article>
                 </div>
                 {% endfor %}
             </div>
             {% else %}
-                <div class="empty-state-card">
-                    <div class="icon"><i class="fas fa-bookmark"></i></div>
-                    <h4>No Bookmarks Yet</h4>
-                    <p class="text-muted">You haven't bookmarked any articles. Find an article you like and click the bookmark icon to save it!</p>
+                <div class="state-card">
+                    <div class="state-card-icon"><i class="fas fa-bookmark" aria-hidden="true"></i></div>
+                    <h2 class="state-card-title">No Bookmarks Yet</h2>
+                    <p class="state-card-text">Find an article you like and tap the bookmark icon to save it here.</p>
+                    <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Browse Articles</a></div>
                 </div>
             {% endif %}
 
             {% if bookmarks_pagination and bookmarks_pagination.pages > 1 %}
             <nav aria-label="Bookmarks navigation" class="mt-5">
                 <ul class="pagination justify-content-center">
-                    <li class="page-item page-link-prev-next {% if not bookmarks_pagination.has_prev %}disabled{% endif %}"><a class="page-link" href="{{ url_for('profile', page=bookmarks_pagination.prev_num) if bookmarks_pagination.has_prev else '#' }}">&laquo; Prev</a></li>
-                    {% for p in bookmarks_pagination.iter_pages(left_edge=1, right_edge=1, left_current=1, right_current=2) %}{% if p %}{% if p == bookmarks_pagination.page %}<li class="page-item active" aria-current="page"><span class="page-link">{{ p }}</span></li>{% else %}<li class="page-item"><a class="page-link" href="{{ url_for('profile', page=p) }}">{{ p }}</a></li>{% endif %}{% else %}<li class="page-item disabled"><span class="page-link">...</span></li>{% endif %}{% endfor %}
-                    <li class="page-item page-link-prev-next {% if not bookmarks_pagination.has_next %}disabled{% endif %}"><a class="page-link" href="{{ url_for('profile', page=bookmarks_pagination.next_num) if bookmarks_pagination.has_next else '#' }}">Next &raquo;</a></li>
+                    <li class="page-item page-link-prev-next {% if not bookmarks_pagination.has_prev %}disabled{% endif %}"><a class="page-link" href="{{ url_for('profile', page=bookmarks_pagination.prev_num) if bookmarks_pagination.has_prev else '#' }}" {% if not bookmarks_pagination.has_prev %}aria-disabled="true" tabindex="-1"{% endif %}>&laquo; Prev</a></li>
+                    {% for p in bookmarks_pagination.iter_pages(left_edge=1, right_edge=1, left_current=1, right_current=2) %}{% if p %}{% if p == bookmarks_pagination.page %}<li class="page-item active" aria-current="page"><span class="page-link">{{ p }}</span></li>{% else %}<li class="page-item"><a class="page-link" href="{{ url_for('profile', page=p) }}">{{ p }}</a></li>{% endif %}{% else %}<li class="page-item disabled"><span class="page-link">&hellip;</span></li>{% endif %}{% endfor %}
+                    <li class="page-item page-link-prev-next {% if not bookmarks_pagination.has_next %}disabled{% endif %}"><a class="page-link" href="{{ url_for('profile', page=bookmarks_pagination.next_num) if bookmarks_pagination.has_next else '#' }}" {% if not bookmarks_pagination.has_next %}aria-disabled="true" tabindex="-1"{% endif %}>Next &raquo;</a></li>
                 </ul>
             </nav>
             {% endif %}
@@ -3146,35 +3691,53 @@ PROFILE_HTML_TEMPLATE = """
             <div class="row g-4">
                 {% for art in posted_articles %}
                 <div class="col-md-6 col-lg-4 d-flex">
-                    <article class="article-card d-flex flex-column w-100">
+                    <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ (loop.index0 * 0.05)|round(2) }}s">
                         {% set article_url = url_for('article_detail', article_hash_id=art.article_hash_id) %}
-                        <div class="article-image-container"><a href="{{ article_url }}"><img src="{{ art.image_url if art.image_url else 'https://via.placeholder.com/400x220/EEEEEE/AAAAAA?text=No+Image' }}" class="article-image" alt="{{ art.title|truncate(50) }}"></a></div>
+                        <div class="article-image-container {% if not art.image_url %}img-fallback{% endif %}">
+                            <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if art.image_url %}<img src="{{ art.image_url }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
+                            <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                        </div>
                         <div class="article-body d-flex flex-column">
-                            <h5 class="article-title mb-2"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h5>
+                            <h3 class="article-title mb-2"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
                             <div class="article-meta small mb-2">
-                                <span class="meta-item text-muted"><i class="fas fa-user-edit"></i> {{ art.author.name|truncate(20) }}</span>
-                                <span class="meta-item text-muted"><i class="far fa-calendar-alt"></i> {{ art.published_at | to_ist }}</span>
+                                <span class="meta-item text-muted"><i class="fas fa-user-edit" aria-hidden="true"></i> {{ art.author.name|truncate(20) }}</span>
+                                <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ art.published_at | to_ist }}</span>
                             </div>
                             <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                            <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small"></i></a>
+                            <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
                         </div>
                     </article>
                 </div>
                 {% endfor %}
             </div>
             {% else %}
-                <div class="empty-state-card">
-                    <div class="icon"><i class="fas fa-feather-alt"></i></div>
-                    <h4>Nothing Posted Yet</h4>
-                    <p class="text-muted">You haven't posted any articles. Click the <i class="fas fa-pen-to-square"></i> button to share your first story!</p>
+                <div class="state-card">
+                    <div class="state-card-icon"><i class="fas fa-pen-to-square" aria-hidden="true"></i></div>
+                    <h2 class="state-card-title">Nothing Posted Yet</h2>
+                    <p class="state-card-text">Share your first story with the BrieflyAI community &mdash; it only takes a minute.</p>
+                    <div class="state-card-actions"><button type="button" class="btn btn-primary-modal" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="fas fa-pen-to-square me-2" aria-hidden="true"></i>Write a Post</button></div>
                 </div>
             {% endif %}
         </div>
     </div>
 </div>
 {% endblock %}
+{% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.stat-item[data-target-tab]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const realTabBtn = document.getElementById(this.dataset.targetTab);
+            if (realTabBtn && typeof bootstrap !== 'undefined') {
+                bootstrap.Tab.getOrCreateInstance(realTabBtn).show();
+                realTabBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        });
+    });
+});
+</script>
+{% endblock %}
 """
-
 PUBLIC_PROFILE_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}{{ user.name }}'s Profile - BrieflyAI{% endblock %}
@@ -3182,39 +3745,43 @@ PUBLIC_PROFILE_HTML_TEMPLATE = """
 <div class="animate-fade-in">
     <div class="profile-header-card mb-4">
         <div class="profile-avatar-wrapper">
-            <div class="profile-avatar">{{ user.name[0]|upper }}</div>
+            <div class="profile-avatar" aria-hidden="true">{{ user.name[0]|upper }}</div>
         </div>
-        <h2>{{ user.name }}</h2>
+        <h1>{{ user.name }}</h1>
         <p class="username">@{{ user.username }}</p>
         <p class="small text-muted mb-0">Member Since: {{ user.created_at | to_ist }}</p>
     </div>
 
-    <h3 class="mt-5 mb-4">Articles by {{ user.name }} ({{ posted_articles|length }})</h3>
-    
+    <h2 class="section-heading mt-5 mb-4">Articles by {{ user.name }} ({{ posted_articles|length }})</h2>
+
     <div class="row g-4">
     {% if posted_articles %}
         {% for art in posted_articles %}
         <div class="col-md-6 col-lg-4 d-flex">
-            <article class="article-card d-flex flex-column w-100">
+            <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ (loop.index0 * 0.05)|round(2) }}s">
                 {% set article_url = url_for('article_detail', article_hash_id=art.article_hash_id) %}
-                <div class="article-image-container"><a href="{{ article_url }}"><img src="{{ art.image_url if art.image_url else 'https://via.placeholder.com/400x220/EEEEEE/AAAAAA?text=No+Image' }}" class="article-image" alt="{{ art.title|truncate(50) }}"></a></div>
+                <div class="article-image-container {% if not art.image_url %}img-fallback{% endif %}">
+                    <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if art.image_url %}<img src="{{ art.image_url }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
+                    <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                </div>
                 <div class="article-body d-flex flex-column">
-                    <h5 class="article-title mb-2"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h5>
+                    <h3 class="article-title mb-2"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
                     <div class="article-meta small mb-2">
-                        <span class="meta-item text-muted"><i class="far fa-calendar-alt"></i> {{ art.published_at | to_ist }}</span>
+                        <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ art.published_at | to_ist }}</span>
                     </div>
                     <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                    <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small"></i></a>
+                    <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
                 </div>
             </article>
         </div>
         {% endfor %}
     {% else %}
         <div class="col-12">
-            <div class="empty-state-card">
-                <div class="icon"><i class="fas fa-feather-alt"></i></div>
-                <h4>No Articles Yet</h4>
-                <p class="text-muted">{{ user.name }} hasn't posted any articles yet.</p>
+            <div class="state-card">
+                <div class="state-card-icon"><i class="fas fa-pen-to-square" aria-hidden="true"></i></div>
+                <h2 class="state-card-title">No Articles Yet</h2>
+                <p class="state-card-text">{{ user.name }} hasn't posted any articles yet. Check back soon.</p>
+                <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Explore Other Articles</a></div>
             </div>
         </div>
     {% endif %}
@@ -3222,7 +3789,6 @@ PUBLIC_PROFILE_HTML_TEMPLATE = """
 </div>
 {% endblock %}
 """
-
 ABOUT_US_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}About Us - BrieflyAI{% endblock %}
@@ -3236,17 +3802,17 @@ ABOUT_US_HTML_TEMPLATE = """
             Welcome to BrieflyAI, your premier destination for the latest news from India and around the world, delivered in a concise and easy-to-digest format. We leverage the power of cutting-edge AI to summarize complex news articles into key takeaways, saving you time while keeping you informed.
         </p>
 
-        <h2><i class="icon fas fa-bullseye"></i>Our Mission</h2>
+        <h2><i class="icon fas fa-bullseye" aria-hidden="true"></i>Our Mission</h2>
         <p>
             In a world of information overload, our mission is to provide clarity and efficiency. We believe that everyone deserves access to accurate, unbiased news without spending hours sifting through lengthy articles. BrieflyAI cuts through the noise, offering insightful summaries that matter.
         </p>
 
-        <h2><i class="icon fas fa-users"></i>Community Hub</h2>
+        <h2><i class="icon fas fa-users" aria-hidden="true"></i>Community Hub</h2>
         <p>
             Beyond AI-driven news, BrieflyAI is a platform for discussion and community engagement. Our Community Hub allows users to post their own articles, share perspectives, and engage in meaningful conversations about the topics that shape our world. We are committed to fostering a respectful and intelligent environment for all our members.
         </p>
 
-        <h2><i class="icon fas fa-microchip"></i>Our Technology</h2>
+        <h2><i class="icon fas fa-microchip" aria-hidden="true"></i>Our Technology</h2>
         <p>
             We use state-of-the-art Natural Language Processing (NLP) models to analyze and summarize news content from trusted sources. Our system is designed to identify the most crucial points of an article, presenting them as a quick summary and a list of key takeaways, ensuring you get the essence of the story in seconds.
         </p>
@@ -3254,7 +3820,6 @@ ABOUT_US_HTML_TEMPLATE = """
 </div>
 {% endblock %}
 """
-
 CONTACT_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}Contact Us - BrieflyAI{% endblock %}
@@ -3270,16 +3835,16 @@ CONTACT_HTML_TEMPLATE = """
         <div class="row g-4">
             <div class="col-md-6">
                 <div class="contact-card">
-                    <div class="icon"><i class="fas fa-envelope"></i></div>
-                    <h4 class="h5">General Inquiries</h4>
+                    <div class="icon"><i class="fas fa-envelope" aria-hidden="true"></i></div>
+                    <h2 class="h5">General Inquiries</h2>
                     <p class="text-muted">For general questions, feedback, or support, please email us at:</p>
                     <a href="mailto:vbansal639@gmail.com" class="fw-bold">vbansal639@gmail.com</a>
                 </div>
             </div>
             <div class="col-md-6">
                 <div class="contact-card">
-                    <div class="icon"><i class="fas fa-handshake"></i></div>
-                    <h4 class="h5">Partnerships & Media</h4>
+                    <div class="icon"><i class="fas fa-handshake" aria-hidden="true"></i></div>
+                    <h2 class="h5">Partnerships &amp; Media</h2>
                     <p class="text-muted">For partnership opportunities or media inquiries, please contact us at:</p>
                     <a href="mailto:vbansal639@gmail.com" class="fw-bold">vbansal639@gmail.com</a>
                 </div>
@@ -3290,17 +3855,16 @@ CONTACT_HTML_TEMPLATE = """
             <h2 class="h3">Follow Us</h2>
             <p class="text-muted">Stay connected with us on social media.</p>
             <div class="contact-social-links mt-3">
-                <a href="#" title="Twitter"><i class="fab fa-twitter"></i></a>
-                <a href="#" title="Facebook"><i class="fab fa-facebook-f"></i></a>
-                <a href="#" title="LinkedIn"><i class="fab fa-linkedin-in"></i></a>
-                <a href="#" title="Instagram"><i class="fab fa-instagram"></i></a>
+                <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="fab fa-twitter" aria-hidden="true"></i></a>
+                <a href="#" title="Facebook" aria-label="BrieflyAI on Facebook"><i class="fab fa-facebook-f" aria-hidden="true"></i></a>
+                <a href="#" title="LinkedIn" aria-label="BrieflyAI on LinkedIn"><i class="fab fa-linkedin-in" aria-hidden="true"></i></a>
+                <a href="#" title="Instagram" aria-label="BrieflyAI on Instagram"><i class="fab fa-instagram" aria-hidden="true"></i></a>
             </div>
         </div>
     </div>
 </div>
 {% endblock %}
 """
-
 PRIVACY_POLICY_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}Privacy Policy - BrieflyAI{% endblock %}
@@ -3312,11 +3876,11 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
     <div class="static-content-container">
         <p class="text-muted">Last updated: June 10, 2025</p>
         <p>BrieflyAI ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you visit our website.</p>
-        
-        <h2><i class="icon fas fa-shield-halved"></i>1. Information We Collect</h2>
+
+        <h2><i class="icon fas fa-shield-halved" aria-hidden="true"></i>1. Information We Collect</h2>
         <p>We may collect personal information that you voluntarily provide to us when you register on the website, post articles or comments, bookmark articles, or subscribe to our newsletter. This information may include your name, username, email address, and your activities on our platform such as articles posted and bookmarked.</p>
-        
-        <h2><i class="icon fas fa-tasks"></i>2. How We Use Your Information</h2>
+
+        <h2><i class="icon fas fa-tasks" aria-hidden="true"></i>2. How We Use Your Information</h2>
         <p>We use the information we collect to:</p>
         <ul>
             <li>Create and manage your account.</li>
@@ -3327,24 +3891,43 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
             <li>Improve our website and services.</li>
         </ul>
 
-        <h2><i class="icon fas fa-share-nodes"></i>3. Disclosure of Your Information</h2>
+        <h2><i class="icon fas fa-share-nodes" aria-hidden="true"></i>3. Disclosure of Your Information</h2>
         <p>Your username and posted articles are publicly visible. Your bookmarked articles are visible on your profile page to you when logged in. We do not sell, trade, or otherwise transfer your personally identifiable information like your email address to outside parties without your consent, except to trusted third parties who assist us in operating our website, so long as those parties agree to keep this information confidential.</p>
-        
-        <h2><i class="icon fas fa-lock"></i>4. Security of Your Information</h2>
+
+        <h2><i class="icon fas fa-lock" aria-hidden="true"></i>4. Security of Your Information</h2>
         <p>We use administrative, technical, and physical security measures to help protect your personal information. While we have taken reasonable steps to secure the personal information you provide to us, please be aware that despite our efforts, no security measures are perfect or impenetrable.</p>
-        
-        <h2><i class="icon fas fa-edit"></i>5. Your Choices</h2>
+
+        <h2><i class="icon fas fa-edit" aria-hidden="true"></i>5. Your Choices</h2>
         <p>You can review and change your profile information by logging into your account. You may also request deletion of your account and associated data by contacting us.</p>
-        
-        <h2><i class="icon fas fa-sync-alt"></i>6. Changes to This Privacy Policy</h2>
+
+        <h2><i class="icon fas fa-sync-alt" aria-hidden="true"></i>6. Changes to This Privacy Policy</h2>
         <p>We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page. You are advised to review this Privacy Policy periodically for any changes.</p>
     </div>
 </div>
 {% endblock %}
 """
+ERROR_404_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}404 Not Found - BrieflyAI{% endblock %}{% block content %}
+<div class="state-card state-card-narrow animate-fade-in">
+    <div class="state-card-icon"><i class="fas fa-map-signs" aria-hidden="true"></i></div>
+    <h1 class="state-card-title">Page Not Found</h1>
+    <p class="state-card-text">Sorry, the page you're looking for doesn't exist or may have been moved.</p>
+    <div class="state-card-actions">
+        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="fas fa-house me-2" aria-hidden="true"></i>Go to Homepage</a>
+    </div>
+</div>
+{% endblock %}"""
 
-ERROR_404_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}404 Not Found{% endblock %}{% block content %}<div class='text-center my-5 p-4 article-card animate-fade-in mx-auto' style='max-width: 600px;'><h1><i class='fas fa-exclamation-triangle text-warning me-2'></i>404 - Page Not Found</h1><p class='lead'>Sorry, the page you are looking for does not exist or has been moved.</p><a href='{{url_for("index")}}' class='btn btn-primary-modal mt-2'>Go to Homepage</a></div>{% endblock %}"""
-ERROR_500_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}500 Server Error{% endblock %}{% block content %}<div class='text-center my-5 p-4 article-card animate-fade-in mx-auto' style='max-width: 600px;'><h1><i class='fas fa-cogs text-danger me-2'></i>500 - Internal Server Error</h1><p class='lead'>Something went wrong on our end. We've been notified and are looking into it.</p><a href='{{url_for("index")}}' class='btn btn-primary-modal mt-2'>Go to Homepage</a></div>{% endblock %}"""
+ERROR_500_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}500 Server Error - BrieflyAI{% endblock %}{% block content %}
+<div class="state-card state-card-narrow state-card-danger animate-fade-in">
+    <div class="state-card-icon"><i class="fas fa-server" aria-hidden="true"></i></div>
+    <h1 class="state-card-title">Something Went Wrong</h1>
+    <p class="state-card-text">We hit a snag on our end. We've been notified and are looking into it.</p>
+    <div class="state-card-actions">
+        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="fas fa-house me-2" aria-hidden="true"></i>Go to Homepage</a>
+        <button type="button" class="btn btn-outline-secondary" onclick="window.location.reload()"><i class="fas fa-rotate-right me-2" aria-hidden="true"></i>Try Again</button>
+    </div>
+</div>
+{% endblock %}"""
 
 # ==============================================================================
 # --- 8. Add all templates to the template_storage dictionary ---
