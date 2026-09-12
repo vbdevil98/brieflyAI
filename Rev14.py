@@ -10,9 +10,13 @@ import hashlib
 import time
 import logging
 import urllib.parse
+import secrets
+import re
+import threading
+from collections import defaultdict, deque, OrderedDict
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from flask import Response
+from flask import Response, abort, make_response
 
 # Third-party imports
 import nltk
@@ -62,7 +66,43 @@ app = Flask(__name__)
 template_storage = {}
 app.jinja_loader = DictLoader(template_storage)
 
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'YOUR_FALLBACK_FLASK_SECRET_KEY_HERE_32_CHARS')
+# SECURITY: Flask decides autoescaping from the template *filename* extension
+# (select_jinja_autoescape -> endswith(".html", ".htm", ".xml", ...)). These templates are
+# keyed as "ARTICLE_HTML_TEMPLATE" etc., which match none of those, so autoescaping would be
+# OFF and every user-supplied value (comment text, article titles, display names) would render
+# as live HTML -> stored XSS. Force it on for all templates.
+app.jinja_env.autoescape = True
+
+_FALLBACK_SECRET_SENTINEL = 'YOUR_FALLBACK_FLASK_SECRET_KEY_HERE_32_CHARS'
+_secret_key = os.environ.get('FLASK_SECRET_KEY')
+# APP_ENV=production is the signal that this is a real deployment.
+IS_PRODUCTION = os.environ.get('APP_ENV', '').lower() in ('production', 'prod')
+
+if not _secret_key or _secret_key == _FALLBACK_SECRET_SENTINEL:
+    if IS_PRODUCTION:
+        # A known/placeholder key means anyone can forge a session cookie and log in as
+        # any user, including the admin. Refuse to boot rather than run insecurely.
+        raise RuntimeError(
+            "FLASK_SECRET_KEY is missing or still set to the placeholder value. "
+            "Set a strong random value (e.g. `python -c \"import secrets; print(secrets.token_hex(32))\"`) "
+            "before starting in production."
+        )
+    # Dev/local: a per-process random key. Sessions won't survive a restart, which is
+    # the correct trade-off versus shipping a publicly-known key.
+    _secret_key = secrets.token_hex(32)
+    logging.warning("FLASK_SECRET_KEY not set - using an ephemeral random key. Sessions reset on restart.")
+
+app.secret_key = _secret_key
+
+# Session cookie hardening.
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,      # JS cannot read the session cookie (XSS containment)
+    SESSION_COOKIE_SAMESITE='Lax',     # blocks the cookie on cross-site POSTs
+    SESSION_COOKIE_SECURE=IS_PRODUCTION,  # HTTPS-only in production; off locally so dev still works
+)
+
+# The admin account is configurable rather than hardcoded.
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'vbdevil').strip().lower()
 app.config['PER_PAGE'] = 9
 app.config['CATEGORIES'] = ['All Articles', 'Popular Stories', "Yesterday's Headlines", 'Community Hub']
 
@@ -73,6 +113,8 @@ app.config['NEWS_API_PAGE_SIZE'] = 100
 app.config['NEWS_API_SORT_BY'] = 'publishedAt' #relevance, popularity, publishedAt
 app.config['CACHE_EXPIRY_SECONDS'] = 1800 
 app.permanent_session_lifetime = timedelta(days=30)
+# Reject oversized uploads/bodies before they are buffered into memory.
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH_BYTES', 2 * 1024 * 1024))
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app.logger.setLevel(logging.INFO)
@@ -138,9 +180,288 @@ else:
     # using_postgres_flag remains False (as initialized)
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    # Managed Postgres drops idle connections; without these, the first query after an
+    # idle period fails with "server closed the connection unexpectedly".
+    'pool_pre_ping': True,
+    'pool_recycle': 280,
+}
 db = SQLAlchemy(app) 
 app.logger.info(f"SQLAlchemy instance created.")
 app.logger.info(f"--- End of Database Configuration ---")
+
+# ==============================================================================
+# --- 2b. Security layer (CSRF, rate limiting, headers, input validation) ---
+#
+# Implemented with the standard library only, so deployment needs no new packages.
+# ==============================================================================
+
+# --- CSRF -------------------------------------------------------------------
+# Without this, any other website can silently make a logged-in visitor's browser
+# POST here (post articles, delete their comments, change bookmarks), because the
+# session cookie rides along automatically.
+CSRF_FIELD_NAME = 'csrf_token'
+CSRF_HEADER_NAME = 'X-CSRFToken'
+CSRF_EXEMPT_ENDPOINTS = set()  # add endpoint names here if a webhook ever needs to bypass
+
+
+def generate_csrf_token():
+    """Return this session's CSRF token, creating one on first use."""
+    token = session.get('_csrf_token')
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session['_csrf_token'] = token
+    return token
+
+
+def csrf_exempt(view):
+    """Decorator to opt a view out of CSRF validation."""
+    CSRF_EXEMPT_ENDPOINTS.add(view.__name__)
+    return view
+
+
+def _request_csrf_token():
+    token = request.form.get(CSRF_FIELD_NAME)
+    if token:
+        return token
+    token = request.headers.get(CSRF_HEADER_NAME)
+    if token:
+        return token
+    if request.is_json:
+        payload = request.get_json(silent=True) or {}
+        if isinstance(payload, dict):
+            return payload.get(CSRF_FIELD_NAME)
+    return None
+
+
+@app.before_request
+def csrf_protect():
+    if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        return None
+    if request.endpoint in CSRF_EXEMPT_ENDPOINTS:
+        return None
+
+    sent = _request_csrf_token()
+    expected = session.get('_csrf_token')
+    # compare_digest avoids leaking token contents through timing differences.
+    if not expected or not sent or not secrets.compare_digest(str(sent), str(expected)):
+        app.logger.warning(
+            "CSRF validation failed for %s %s (endpoint=%s)",
+            request.method, request.path, request.endpoint
+        )
+        wants_json = request.is_json or request.headers.get('Accept', '').startswith('application/json')
+        if wants_json:
+            return jsonify({
+                "success": False,
+                "error": "Your session expired or the request could not be verified. Please refresh the page and try again."
+            }), 400
+        flash("Your session expired or the request could not be verified. Please try again.", "danger")
+        return redirect(safe_redirect_target(request.referrer))
+    return None
+
+
+# --- Rate limiting ----------------------------------------------------------
+# In-memory sliding window. Note: this is per-process, so with multiple gunicorn
+# workers each worker enforces its own budget. It stops casual brute force and
+# spam; a shared store (Redis) would be needed for strict global limits.
+_rate_buckets = defaultdict(deque)
+_rate_lock = threading.Lock()
+_RATE_SWEEP_EVERY = 500
+_rate_calls_since_sweep = 0
+
+
+def _client_identity():
+    """Best-effort caller identity: logged-in user, else client IP."""
+    if session.get('user_id'):
+        return f"user:{session['user_id']}"
+    forwarded = request.headers.get('X-Forwarded-For', '')
+    ip = forwarded.split(',')[0].strip() if forwarded else (request.remote_addr or 'unknown')
+    return f"ip:{ip}"
+
+
+def _sweep_rate_buckets(now, max_window):
+    """Drop buckets that have gone quiet so memory doesn't grow without bound."""
+    stale = [k for k, dq in _rate_buckets.items() if not dq or (now - dq[-1]) > max_window]
+    for k in stale:
+        _rate_buckets.pop(k, None)
+
+
+SAFE_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS'})
+
+
+def rate_limit(limit, per_seconds, scope=None, message=None, methods=None):
+    """
+    Allow at most `limit` requests per `per_seconds` per caller.
+
+    By default only state-changing methods are counted. Several of these views serve
+    both GET and POST (login, register), and counting page views would lock a
+    legitimate user out simply for reloading the form.
+    """
+    def decorator(view):
+        bucket_scope = scope or view.__name__
+        counted = frozenset(m.upper() for m in methods) if methods else None
+
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            global _rate_calls_since_sweep
+            if counted is None:
+                if request.method in SAFE_METHODS:
+                    return view(*args, **kwargs)
+            elif request.method not in counted:
+                return view(*args, **kwargs)
+            key = f"{bucket_scope}:{_client_identity()}"
+            now = time.time()
+            with _rate_lock:
+                _rate_calls_since_sweep += 1
+                if _rate_calls_since_sweep >= _RATE_SWEEP_EVERY:
+                    _rate_calls_since_sweep = 0
+                    _sweep_rate_buckets(now, max(per_seconds * 4, 3600))
+                dq = _rate_buckets[key]
+                while dq and (now - dq[0]) > per_seconds:
+                    dq.popleft()
+                if len(dq) >= limit:
+                    retry_after = int(per_seconds - (now - dq[0])) + 1
+                    app.logger.warning("Rate limit hit on %s by %s", bucket_scope, key)
+                    text = message or "Too many requests. Please slow down and try again shortly."
+                    wants_json = request.is_json or request.headers.get('Accept', '').startswith('application/json')
+                    if wants_json:
+                        resp = jsonify({"success": False, "error": text})
+                        resp.status_code = 429
+                        resp.headers['Retry-After'] = str(retry_after)
+                        return resp
+                    flash(text, "warning")
+                    resp = make_response(redirect(safe_redirect_target(request.referrer)))
+                    resp.headers['Retry-After'] = str(retry_after)
+                    return resp
+                dq.append(now)
+            return view(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# --- Safe redirects ---------------------------------------------------------
+def is_safe_redirect_url(target):
+    """True only for same-host relative/absolute URLs, so ?next= can't send users off-site."""
+    if not target:
+        return False
+    if target.startswith('//') or target.startswith('\\\\'):
+        return False
+    parsed = urllib.parse.urlparse(urllib.parse.urljoin(request.host_url, target))
+    host_parsed = urllib.parse.urlparse(request.host_url)
+    return parsed.scheme in ('http', 'https') and parsed.netloc == host_parsed.netloc
+
+
+def safe_redirect_target(target, fallback_endpoint='index'):
+    return target if is_safe_redirect_url(target) else url_for(fallback_endpoint)
+
+
+# --- Input validation -------------------------------------------------------
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]{2,}$")
+USERNAME_RE = re.compile(r"^[a-z0-9_.-]{3,80}$")
+
+LIMITS = {
+    'comment': 5000,
+    'article_title': 250,
+    'article_description': 1000,
+    'article_content': 50000,
+    'source_name': 100,
+    'image_url': 500,
+    'name': 120,
+    'email': 120,
+}
+
+
+def clean_text(value, max_length, allow_empty=False):
+    """Trim, collapse NULs, and enforce a maximum length. Returns (value, error)."""
+    value = (value or '').replace('\x00', '').strip()
+    if not value and not allow_empty:
+        return None, "This field is required."
+    if len(value) > max_length:
+        return None, f"Too long - please keep this under {max_length} characters."
+    return value, None
+
+
+# --- Security headers -------------------------------------------------------
+@app.after_request
+def set_security_headers(response):
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
+    response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    response.headers.setdefault('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), interest-cohort=()')
+    if IS_PRODUCTION:
+        response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    return response
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {'csrf_token': generate_csrf_token}
+
+
+# --- Request correlation + teardown ------------------------------------------
+@app.before_request
+def attach_request_id():
+    """Tag each request so its log lines can be traced together."""
+    from flask import g
+    g.request_id = request.headers.get('X-Request-ID') or secrets.token_hex(6)
+
+
+@app.after_request
+def echo_request_id(response):
+    from flask import g
+    rid = getattr(g, 'request_id', None)
+    if rid:
+        response.headers.setdefault('X-Request-ID', rid)
+    return response
+
+
+@app.teardown_appcontext
+def release_db_session(exception=None):
+    """Always return the connection to the pool, even when a view raised."""
+    try:
+        if exception:
+            db.session.rollback()
+        db.session.remove()
+    except Exception:
+        pass
+
+
+def _wants_json():
+    return request.is_json or request.headers.get('Accept', '').startswith('application/json')
+
+
+@app.errorhandler(400)
+def bad_request(e):
+    if _wants_json():
+        return jsonify({"success": False, "error": "The request could not be understood."}), 400
+    return render_template("404_TEMPLATE"), 400
+
+
+@app.errorhandler(403)
+def forbidden(e):
+    if _wants_json():
+        return jsonify({"success": False, "error": "You don't have permission to do that."}), 403
+    flash("You don't have permission to do that.", "danger")
+    return redirect(url_for('index'))
+
+
+@app.errorhandler(413)
+def payload_too_large(e):
+    msg = "That submission is too large. Please shorten it and try again."
+    if _wants_json():
+        return jsonify({"success": False, "error": msg}), 413
+    flash(msg, "warning")
+    return redirect(url_for('index'))
+
+
+@app.errorhandler(429)
+def too_many_requests(e):
+    msg = "Too many requests. Please slow down and try again shortly."
+    if _wants_json():
+        return jsonify({"success": False, "error": msg}), 429
+    flash(msg, "warning")
+    return redirect(url_for('index'))
+
 
 # ==============================================================================
 # --- 3. API Client Initialization ---
@@ -208,8 +529,8 @@ class CommunityArticle(db.Model):
     full_text = db.Column(db.Text, nullable=False)
     source_name = db.Column(db.String(100), nullable=False)
     image_url = db.Column(db.String(500), nullable=True)
-    published_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    published_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     groq_summary = db.Column(db.Text, nullable=True)
     groq_takeaways = db.Column(db.Text, nullable=True) # Stored as JSON string
     comments = db.relationship('Comment', backref=db.backref('community_article', lazy='joined'), lazy='dynamic', foreign_keys='Comment.community_article_id', cascade="all, delete-orphan")
@@ -217,11 +538,11 @@ class CommunityArticle(db.Model):
 class Comment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     content = db.Column(db.Text, nullable=False)
-    timestamp = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    community_article_id = db.Column(db.Integer, db.ForeignKey('community_article.id'), nullable=True)
+    timestamp = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    community_article_id = db.Column(db.Integer, db.ForeignKey('community_article.id'), nullable=True, index=True)
     api_article_hash_id = db.Column(db.String(32), nullable=True, index=True)
-    parent_id = db.Column(db.Integer, db.ForeignKey('comment.id'), nullable=True)
+    parent_id = db.Column(db.Integer, db.ForeignKey('comment.id'), nullable=True, index=True)
     replies = db.relationship('Comment', backref=db.backref('parent', remote_side=[id]), lazy='selectin', cascade="all, delete-orphan")
     votes = db.relationship('CommentVote', backref='comment', lazy='dynamic', cascade="all, delete-orphan")
 
@@ -229,7 +550,7 @@ class Comment(db.Model):
 class CommentVote(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete="CASCADE"), nullable=False)
-    comment_id = db.Column(db.Integer, db.ForeignKey('comment.id', ondelete="CASCADE"), nullable=False)
+    comment_id = db.Column(db.Integer, db.ForeignKey('comment.id', ondelete="CASCADE"), nullable=False, index=True)
     # MODIFIED: Changed to store the specific emoji character for the reaction.
     vote_emoji = db.Column(db.String(10), nullable=False)
     # The unique constraint ensures a user can only have one reaction per comment.
@@ -243,7 +564,7 @@ class Subscriber(db.Model):
 
 class BookmarkedArticle(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete="CASCADE"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete="CASCADE"), nullable=False, index=True)
     article_hash_id = db.Column(db.String(32), nullable=False, index=True)
     is_community_article = db.Column(db.Boolean, default=False, nullable=False)
     title_cache = db.Column(db.String(250), nullable=True)
@@ -251,8 +572,20 @@ class BookmarkedArticle(db.Model):
     image_url_cache = db.Column(db.String(500), nullable=True)
     description_cache = db.Column(db.Text, nullable=True)
     published_at_cache = db.Column(db.DateTime, nullable=True) # Store as datetime for API articles
-    bookmarked_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    bookmarked_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     __table_args__ = (db.UniqueConstraint('user_id', 'article_hash_id', name='_user_article_bookmark_uc'),)
+
+class ArticleStat(db.Model):
+    """
+    View counts, keyed by article hash so it works for both community and API
+    articles. Deliberately a NEW table: adding a column to an existing model would
+    need a migration, and db.create_all() only creates missing tables.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    article_hash_id = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    view_count = db.Column(db.Integer, nullable=False, default=0)
+    last_viewed_at = db.Column(db.DateTime, nullable=True, index=True)
+
 
 def init_db():
     # To access the global 'using_postgres_flag' set earlier
@@ -291,7 +624,87 @@ def init_db():
 # ==============================================================================
 # --- 5. Helper Functions ---
 # ==============================================================================
-MASTER_ARTICLE_STORE, API_CACHE = {}, {}
+class BoundedCache:
+    """
+    Thread-safe cache with LRU eviction and optional TTL.
+
+    Replaces the plain dicts previously used here, which were never evicted from and
+    so grew for the lifetime of the process. Reads refresh recency, so entries that
+    are still actively viewed (including cached AI analysis) survive eviction.
+    """
+
+    def __init__(self, max_entries=5000, ttl_seconds=None):
+        self._data = OrderedDict()
+        self._lock = threading.RLock()
+        self.max_entries = max_entries
+        self.ttl_seconds = ttl_seconds
+        self.hits = 0
+        self.misses = 0
+        self.evictions = 0
+
+    def _expired(self, stamped_at):
+        return self.ttl_seconds is not None and (time.time() - stamped_at) > self.ttl_seconds
+
+    def get(self, key, default=None):
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                self.misses += 1
+                return default
+            value, stamped_at = entry
+            if self._expired(stamped_at):
+                self._data.pop(key, None)
+                self.misses += 1
+                return default
+            self._data.move_to_end(key)  # mark as recently used
+            self.hits += 1
+            return value
+
+    def set(self, key, value):
+        with self._lock:
+            self._data[key] = (value, time.time())
+            self._data.move_to_end(key)
+            while len(self._data) > self.max_entries:
+                self._data.popitem(last=False)  # drop least-recently-used
+                self.evictions += 1
+
+    # dict-style access, so existing call sites keep working unchanged.
+    def __getitem__(self, key):
+        sentinel = object()
+        value = self.get(key, sentinel)
+        if value is sentinel:
+            raise KeyError(key)
+        return value
+
+    def __setitem__(self, key, value):
+        self.set(key, value)
+
+    def __contains__(self, key):
+        sentinel = object()
+        return self.get(key, sentinel) is not sentinel
+
+    def __len__(self):
+        with self._lock:
+            return len(self._data)
+
+    def stats(self):
+        with self._lock:
+            total = self.hits + self.misses
+            return {
+                "entries": len(self._data),
+                "max_entries": self.max_entries,
+                "hits": self.hits,
+                "misses": self.misses,
+                "evictions": self.evictions,
+                "hit_rate": round(self.hits / total, 3) if total else None,
+            }
+
+
+# MASTER_ARTICLE_STORE holds fetched API articles (including any cached AI analysis).
+# It is capped rather than unbounded; the app already handles a missing entry as
+# "article not found", which is the same behaviour as after a restart.
+MASTER_ARTICLE_STORE = BoundedCache(max_entries=int(os.environ.get('ARTICLE_STORE_MAX', '4000')))
+API_CACHE = BoundedCache(max_entries=1000, ttl_seconds=None)
 INDIAN_TIMEZONE = pytz.timezone('Asia/Kolkata')
 
 def generate_article_id(url_or_title): return hashlib.md5(url_or_title.encode('utf-8')).hexdigest()
@@ -343,7 +756,8 @@ def simple_cache(expiry_seconds_default=None):
                 return cached_entry[0]
             app.logger.debug(f"Cache MISS for {func.__name__}. Calling function.")
             result = func(*args, **kwargs)
-            API_CACHE[cache_key] = (result, time.time())
+            # Per-call expiry is kept in the tuple; the cache itself only bounds size.
+            API_CACHE.set(cache_key, (result, time.time()))
             return result
         return wrapper
     return decorator
@@ -609,7 +1023,6 @@ def fetch_news_from_api(target_date_str=None):
         unique_urls.add(url)
         article_id = generate_article_id(url)
         source_name = art_data['source'].get('name', 'Unknown Source')
-        placeholder_text = urllib.parse.quote_plus(source_name[:20])
         published_at_dt = None
         if art_data.get('publishedAt'):
             try:
@@ -626,7 +1039,7 @@ def fetch_news_from_api(target_date_str=None):
 
         standardized_article = {
             'id': article_id, 'title': title, 'description': description,
-            'url': url, 'urlToImage': art_data.get('urlToImage') or f'https://via.placeholder.com/400x220/0D2C54/FFFFFF?text={placeholder_text}',
+            'url': url, 'urlToImage': art_data.get('urlToImage') or None,
             'publishedAt': published_at_dt.isoformat(), # Store as ISO string
             'source': {'name': source_name}, 'is_community_article': False,
             'groq_summary': None, 'groq_takeaways': None
@@ -677,7 +1090,6 @@ def fetch_popular_news():
                 unique_urls.add(url)
                 article_id = generate_article_id(url)
                 source_name = art_data['source'].get('name', 'Unknown Source')
-                placeholder_text = urllib.parse.quote_plus(source_name[:20])
                 
                 published_at_dt = None
                 if art_data.get('publishedAt'):
@@ -690,7 +1102,7 @@ def fetch_popular_news():
 
                 standardized_article = {
                     'id': article_id, 'title': title, 'description': description, 'url': url,
-                    'urlToImage': art_data.get('urlToImage') or f'https://via.placeholder.com/400x220/0D2C54/FFFFFF?text={placeholder_text}',
+                    'urlToImage': art_data.get('urlToImage') or None,
                     'publishedAt': published_at_dt.isoformat(), 'source': {'name': source_name}, 
                     'is_community_article': False, 'groq_summary': None, 'groq_takeaways': None
                 }
@@ -755,7 +1167,6 @@ def fetch_yesterdays_latest_news():
                 unique_urls.add(url)
                 article_id = generate_article_id(url)
                 source_name = art_data['source'].get('name', 'Unknown Source')
-                placeholder_text = urllib.parse.quote_plus(source_name[:20])
                 published_at_dt = None
                 if art_data.get('publishedAt'):
                     try:
@@ -766,7 +1177,7 @@ def fetch_yesterdays_latest_news():
                     published_at_dt = datetime.now(timezone.utc)
                 standardized_article = {
                     'id': article_id, 'title': title, 'description': description, 'url': url,
-                    'urlToImage': art_data.get('urlToImage') or f'https://via.placeholder.com/400x220/0D2C54/FFFFFF?text={placeholder_text}',
+                    'urlToImage': art_data.get('urlToImage') or None,
                     'publishedAt': published_at_dt.isoformat(), 'source': {'name': source_name}, 
                     'is_community_article': False, 'groq_summary': None, 'groq_takeaways': None
                 }
@@ -787,7 +1198,8 @@ def fetch_and_parse_article_content(article_hash_id, url):
     
     params = {'api_key': SCRAPER_API_KEY, 'url': url}
     try:
-        response = requests.get('http://api.scraperapi.com', params=params, timeout=45)
+        response = requests.get('http://api.scraperapi.com', params=params,
+                                timeout=int(os.environ.get('SCRAPER_TIMEOUT_SECONDS', '25')))
         response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
 
         config = Config()
@@ -852,7 +1264,16 @@ def inject_global_vars():
             'request': request,
             'groq_client': groq_client is not None}
 
+MAX_PAGE = 10000  # guards against ?page=999999999 style requests
+
 def get_paginated_articles(articles, page, per_page):
+    # Clamp first: a zero/negative page produces a negative slice start, which in Python
+    # silently wraps to the END of the list instead of erroring.
+    try:
+        page = int(page)
+    except (TypeError, ValueError):
+        page = 1
+    page = max(1, min(page, MAX_PAGE))
     total = len(articles)
     start = (page - 1) * per_page
     end = start + per_page
@@ -1027,7 +1448,6 @@ def search_results(page=1):
     # --- STEP 1: VERIFICATION ---
     # This message will appear on your webpage if this function is running correctly.
     # If you don't see it, your server has not reloaded the new code.
-    flash("DEBUG: The correct search_results function was called!", "success")
 
     session['previous_list_page'] = request.full_path
     query_str = request.args.get('query', '').strip()
@@ -1079,7 +1499,6 @@ def search_results(page=1):
                     unique_urls.add(url)
                     article_id = generate_article_id(url)
                     source_name = art_data['source'].get('name', 'Unknown Source')
-                    placeholder_text = urllib.parse.quote_plus(source_name[:20])
                     
                     published_at_dt = None
                     if art_data.get('publishedAt'):
@@ -1095,7 +1514,7 @@ def search_results(page=1):
                         'title': title,
                         'description': description,
                         'url': url,
-                        'urlToImage': art_data.get('urlToImage') or f'https://via.placeholder.com/400x220/0D2C54/FFFFFF?text={placeholder_text}',
+                        'urlToImage': art_data.get('urlToImage') or None,
                         'publishedAt': published_at_dt.isoformat(),
                         'source': {'name': source_name},
                         'is_community_article': False
@@ -1115,12 +1534,11 @@ def search_results(page=1):
     
     # --- STEP 4: COMBINE WITH LOCAL RESULTS ---
     # Also search your app's own community-posted articles for the same keyword.
+    # This matches each word independently across title, description AND body, so a
+    # multi-word query like "modi economy" finds "Modi discusses the economy".
+    # (The previous single ilike required the whole phrase to appear contiguously.)
     community_db_articles = []
-    community_db_articles_query = CommunityArticle.query.options(joinedload(CommunityArticle.author)).filter(
-        db.or_(CommunityArticle.title.ilike(f'%{query_str}%'), CommunityArticle.description.ilike(f'%{query_str}%'))
-    ).order_by(CommunityArticle.published_at.desc())
-    
-    for art in community_db_articles_query.all():
+    for art in search_community_articles(query_str):
         art.is_community_article = True
         community_db_articles.append(art)
 
@@ -1164,6 +1582,8 @@ def search_results(page=1):
 def article_detail(article_hash_id):
     article_data, is_community_article, is_bookmarked = None, False, False
     previous_list_page = session.get('previous_list_page', url_for('index'))
+
+    _record_article_view(article_hash_id)
 
     article_db = CommunityArticle.query.options(joinedload(CommunityArticle.author)).filter_by(article_hash_id=article_hash_id).first()
     if article_db:
@@ -1243,11 +1663,14 @@ def get_article_content_json(article_hash_id):
 
 @app.route('/add_comment/<article_hash_id>', methods=['POST'])
 @login_required
+@rate_limit(12, 300, scope='add_comment', message="You're commenting very quickly. Please wait a moment.")
 def add_comment(article_hash_id):
-    content = request.json.get('content', '').strip()
-    parent_id = request.json.get('parent_id')
-    if not content:
-        return jsonify({"success": False, "error": "Comment cannot be empty."}), 400
+    payload = request.get_json(silent=True) or {}
+    content, content_err = clean_text(payload.get('content'), LIMITS['comment'])
+    if content_err:
+        return jsonify({"success": False, "error": content_err if content else "Comment cannot be empty."}), 400
+
+    parent_id = payload.get('parent_id')
     
     user = User.query.get(session['user_id'])
     if not user:
@@ -1258,7 +1681,7 @@ def add_comment(article_hash_id):
     # The new logic is simpler and more reliable.
     # It trusts the article_hash_id from the page the user is on.
     
-    new_comment = Comment(content=content, user_id=user.id, parent_id=parent_id)
+    new_comment = Comment(content=content, user_id=user.id)
     
     # First, check if it's a permanent community article from our database.
     community_article = CommunityArticle.query.filter_by(article_hash_id=article_hash_id).first()
@@ -1270,6 +1693,25 @@ def add_comment(article_hash_id):
         # If not, assume it's an API article and save the hash ID.
         # We no longer check against the volatile MASTER_ARTICLE_STORE cache.
         new_comment.api_article_hash_id = article_hash_id
+
+    # parent_id comes from the client, so confirm it exists AND belongs to this same
+    # article - otherwise a reply could be grafted into another article's thread.
+    if parent_id not in (None, '', 0):
+        try:
+            parent_id = int(parent_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Invalid reply target."}), 400
+        parent = Comment.query.get(parent_id)
+        if not parent:
+            return jsonify({"success": False, "error": "The comment you replied to no longer exists."}), 404
+        same_thread = (
+            (community_article and parent.community_article_id == community_article.id)
+            or (not community_article and parent.api_article_hash_id == article_hash_id)
+        )
+        if not same_thread:
+            app.logger.warning("Rejected cross-article reply: comment %s -> article %s", parent_id, article_hash_id)
+            return jsonify({"success": False, "error": "Invalid reply target."}), 400
+        new_comment.parent_id = parent.id
 
     try:
         db.session.add(new_comment)
@@ -1293,7 +1735,7 @@ def add_comment(article_hash_id):
 @login_required
 def vote_comment(comment_id):
     comment = Comment.query.get_or_404(comment_id)
-    emoji = request.json.get('emoji')
+    emoji = (request.get_json(silent=True) or {}).get('emoji')
     
     # Define the set of allowed emojis for reactions.
     allowed_emojis = ['👍', '❤️', '😂', '😮', '😢', '😠']
@@ -1369,7 +1811,9 @@ def edit_comment(comment_id):
     if comment.user_id != session['user_id']:
         return jsonify({"success": False, "error": "You are not authorized to edit this comment."}), 403
 
-    new_content = request.json.get('content', '').strip()
+    new_content, _content_err = clean_text((request.get_json(silent=True) or {}).get('content'), LIMITS['comment'])
+    if _content_err:
+        return jsonify({"success": False, "error": _content_err}), 400
     if not new_content:
         return jsonify({"success": False, "error": "Comment content cannot be empty."}), 400
 
@@ -1386,12 +1830,30 @@ def edit_comment(comment_id):
 
 @app.route('/post_article', methods=['POST'])
 @login_required
+@rate_limit(8, 3600, scope='post_article', message="You've posted several articles recently. Please try again later.")
 def post_article():
     title, description, content, source_name, image_url = map(lambda x: request.form.get(x, '').strip(), ['title', 'description', 'content', 'sourceName', 'imageUrl'])
     source_name = source_name or 'Community Post'
-    if not all([title, description, content, source_name]):
-        flash("Title, Description, Full Content, and Source Name are required.", "danger")
-        return redirect(request.referrer or url_for('index'))
+
+    # Validate against the column limits so oversized input is a friendly message
+    # rather than a database error and a 500 page.
+    for value, key, label in (
+        (title, 'article_title', 'Title'),
+        (description, 'article_description', 'Description'),
+        (content, 'article_content', 'Full content'),
+        (source_name, 'source_name', 'Source name'),
+    ):
+        cleaned, err = clean_text(value, LIMITS[key])
+        if err:
+            flash(f"{label}: {err}", "danger")
+            return redirect(safe_redirect_target(request.referrer))
+
+    if image_url:
+        parsed_img = urllib.parse.urlparse(image_url)
+        if parsed_img.scheme not in ('http', 'https') or len(image_url) > LIMITS['image_url']:
+            flash("Image URL must be a valid http(s) link under 500 characters.", "warning")
+            return redirect(safe_redirect_target(request.referrer))
+
     article_hash_id = generate_article_id(title + str(session['user_id']) + str(time.time()))
     groq_analysis_result = get_article_analysis_with_groq(content, title)
     groq_summary_text, groq_takeaways_json_str = None, None
@@ -1399,23 +1861,44 @@ def post_article():
         groq_summary_text = groq_analysis_result.get('groq_summary')
         takeaways_list = groq_analysis_result.get('groq_takeaways')
         if takeaways_list and isinstance(takeaways_list, list): groq_takeaways_json_str = json.dumps(takeaways_list)
-    new_article = CommunityArticle(article_hash_id=article_hash_id, title=title, description=description, full_text=content, source_name=source_name, image_url=image_url or f'https://via.placeholder.com/400x220/1E3A5E/FFFFFF?text={urllib.parse.quote_plus(title[:20])}', user_id=session['user_id'], published_at=datetime.now(timezone.utc), groq_summary=groq_summary_text, groq_takeaways=groq_takeaways_json_str)
-    db.session.add(new_article); db.session.commit()
+    # No image is fine: the templates render a styled fallback tile. (Previously this
+    # pointed at via.placeholder.com, a third-party service that often fails to load.)
+    new_article = CommunityArticle(article_hash_id=article_hash_id, title=title, description=description, full_text=content, source_name=source_name, image_url=image_url or None, user_id=session['user_id'], published_at=datetime.now(timezone.utc), groq_summary=groq_summary_text, groq_takeaways=groq_takeaways_json_str)
+    try:
+        db.session.add(new_article); db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error saving community article: {e}", exc_info=True)
+        flash("Could not post your article right now. Please try again.", "danger")
+        return redirect(safe_redirect_target(request.referrer))
     flash("Your article has been posted!", "success")
     return redirect(url_for('article_detail', article_hash_id=new_article.article_hash_id))
 
 @app.route('/register', methods=['GET', 'POST'])
+@rate_limit(5, 3600, scope='register', message="Too many accounts created from here recently. Please try again later.")
 def register():
     if 'user_id' in session: return redirect(url_for('index'))
     if request.method == 'POST':
         name, username, password = request.form.get('name', '').strip(), request.form.get('username', '').strip().lower(), request.form.get('password', '')
-        if not all([name, username, password]): flash('All fields are required.', 'danger')
-        elif len(username) < 3: flash('Username must be at least 3 characters.', 'warning')
+        name, name_err = clean_text(name, LIMITS['name'])
+        if name_err: flash(f'Name: {name_err}', 'danger')
+        elif not all([name, username, password]): flash('All fields are required.', 'danger')
+        elif not USERNAME_RE.match(username):
+            flash('Username must be 3-80 characters, using only letters, numbers, dots, underscores or hyphens.', 'warning')
         elif len(password) < 6: flash('Password must be at least 6 characters.', 'warning')
+        elif len(password) > 200: flash('Password must be under 200 characters.', 'warning')
         elif User.query.filter_by(username=username).first(): flash('Username already exists. Please choose another.', 'warning')
         else:
             new_user = User(name=name, username=username, password_hash=generate_password_hash(password))
-            db.session.add(new_user); db.session.commit()
+            try:
+                db.session.add(new_user); db.session.commit()
+            except Exception as e:
+                # Two simultaneous signups for the same username: the unique constraint
+                # catches what the check above can't.
+                db.session.rollback()
+                app.logger.warning("Registration failed for username=%r: %s", username, e)
+                flash('That username was just taken. Please try another.', 'warning')
+                return redirect(url_for('register'))
             flash(f'Registration successful, {name}! Please log in.', 'success')
             return redirect(url_for('login'))
         return redirect(url_for('register'))
@@ -1425,7 +1908,7 @@ def register():
 @login_required
 def delete_community_article(article_hash_id):
     # Security Check: Ensure the user has the admin flag from the session.
-    if not session.get('is_admin') or session.get('username') != 'vbdevil':
+    if not session.get('is_admin') or session.get('username') != ADMIN_USERNAME:
         return jsonify({"success": False, "error": "Administrator access required."}), 403
 
     article = CommunityArticle.query.filter_by(article_hash_id=article_hash_id).first()
@@ -1446,29 +1929,31 @@ def delete_community_article(article_hash_id):
         return jsonify({"success": False, "error": "A database error occurred during deletion."}), 500
 
 @app.route('/login', methods=['GET', 'POST'])
+@rate_limit(10, 300, scope='login', message="Too many login attempts. Please wait a few minutes and try again.")
 def login():
     if 'user_id' in session: return redirect(url_for('index'))
     if request.method == 'POST':
         username, password = request.form.get('username', '').strip().lower(), request.form.get('password', '')
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password_hash, password):
+            # Drop any pre-login session state (incl. the old CSRF token) so a token
+            # fixed by an attacker before login can't be reused afterwards.
+            session.clear()
             session.permanent = True
             session['user_id'] = user.id
             session['user_name'] = user.name
             # Store username for easy access in templates/routes
             session['username'] = user.username
-            
-            # Check if the logged-in user is the designated admin
-            if user.username == "vbdevil":
-                session['is_admin'] = True
-            else:
-                session['is_admin'] = False
+            session['is_admin'] = (user.username == ADMIN_USERNAME)
 
             flash(f"Welcome back, {user.name}!", "success")
-            next_url = request.args.get('next')
-            session.pop('previous_list_page', None) 
-            return redirect(next_url or url_for('index'))
-        else: flash('Invalid username or password.', 'danger')
+            # `next` is attacker-controllable, so only follow same-host targets.
+            next_url = safe_redirect_target(request.args.get('next'))
+            session.pop('previous_list_page', None)
+            return redirect(next_url)
+        else:
+            app.logger.info("Failed login attempt for username=%r from %s", username, _client_identity())
+            flash('Invalid username or password.', 'danger')
     return render_template("LOGIN_HTML_TEMPLATE")
 
 @app.route('/logout')
@@ -1481,14 +1966,21 @@ def contact(): return render_template("CONTACT_HTML_TEMPLATE")
 def privacy(): return render_template("PRIVACY_POLICY_HTML_TEMPLATE")
 
 @app.route('/subscribe', methods=['POST'])
+@rate_limit(5, 3600, scope='subscribe', message="Too many subscription attempts. Please try again later.")
 def subscribe():
     email = request.form.get('email', '').strip().lower()
-    if not email: flash('Email is required to subscribe.', 'warning')
-    elif Subscriber.query.filter_by(email=email).first(): flash('You are already subscribed to our newsletter.', 'info')
+    if not email:
+        flash('Email is required to subscribe.', 'warning')
+    elif len(email) > LIMITS['email'] or not EMAIL_RE.match(email):
+        flash('Please enter a valid email address.', 'warning')
+    elif Subscriber.query.filter_by(email=email).first():
+        flash('You are already subscribed to our newsletter.', 'info')
     else:
-        try: db.session.add(Subscriber(email=email)); db.session.commit(); flash('Thank you for subscribing!', 'success')
-        except Exception as e: db.session.rollback(); app.logger.error(f"Error subscribing email {email}: {e}"); flash('Could not subscribe at this time. Please try again later.', 'danger')
-    return redirect(request.referrer or url_for('index'))
+        try:
+            db.session.add(Subscriber(email=email)); db.session.commit(); flash('Thank you for subscribing!', 'success')
+        except Exception as e:
+            db.session.rollback(); app.logger.error(f"Error subscribing email: {e}"); flash('Could not subscribe at this time. Please try again later.', 'danger')
+    return redirect(safe_redirect_target(request.referrer))
 
 @app.route('/toggle_bookmark/<article_hash_id>', methods=['POST'])
 @login_required
@@ -1527,7 +2019,8 @@ def toggle_bookmark(article_hash_id):
 @login_required
 def profile():
     user = User.query.get_or_404(session['user_id'])
-    page = request.args.get('page', 1, type=int)
+    page = request.args.get('page', 1, type=int) or 1
+    page = max(1, min(page, MAX_PAGE))
     per_page = app.config['PER_PAGE']
     user_posted_articles = CommunityArticle.query.filter_by(user_id=user.id).order_by(CommunityArticle.published_at.desc()).all()
     bookmarks_query = BookmarkedArticle.query.filter_by(user_id=user.id).order_by(BookmarkedArticle.bookmarked_at.desc())
@@ -1541,7 +2034,7 @@ def profile():
         else:
             api_art = MASTER_ARTICLE_STORE.get(bookmark.article_hash_id)
             if api_art: article_detail_data = {'id': api_art['id'], 'title': api_art['title'], 'description': api_art['description'], 'urlToImage': api_art['urlToImage'], 'publishedAt': api_art['publishedAt'], 'source': {'name': api_art['source']['name']}, 'is_community_article': False, 'article_url': url_for('article_detail', article_hash_id=api_art['id'])}
-            else: article_detail_data = {'id': bookmark.article_hash_id, 'title': bookmark.title_cache or "Bookmarked Article (Details N/A)", 'description': bookmark.description_cache or "Description not available.", 'urlToImage': bookmark.image_url_cache or f'https://via.placeholder.com/400x220/CCCCCC/000000?text=Preview+N/A', 'publishedAt': bookmark.published_at_cache.isoformat() if bookmark.published_at_cache else None, 'source': {'name': bookmark.source_name_cache or "Unknown Source"}, 'is_community_article': False, 'article_url': url_for('article_detail', article_hash_id=bookmark.article_hash_id), 'is_stale_bookmark': True}
+            else: article_detail_data = {'id': bookmark.article_hash_id, 'title': bookmark.title_cache or "Bookmarked Article (Details N/A)", 'description': bookmark.description_cache or "Description not available.", 'urlToImage': bookmark.image_url_cache or None, 'publishedAt': bookmark.published_at_cache.isoformat() if bookmark.published_at_cache else None, 'source': {'name': bookmark.source_name_cache or "Unknown Source"}, 'is_community_article': False, 'article_url': url_for('article_detail', article_hash_id=bookmark.article_hash_id), 'is_stale_bookmark': True}
         if article_detail_data: user_bookmarked_articles_data.append(article_detail_data)
     return render_template("PROFILE_HTML_TEMPLATE", user=user, posted_articles=user_posted_articles, bookmarked_articles=user_bookmarked_articles_data, bookmarks_pagination=user_bookmarks_paginated_query, current_page=page)
 
@@ -1557,6 +2050,456 @@ def ads_txt():
     # If you have other ad partners, add their lines here, each on a new line.
     # e.g., ads_content += "\notheradsystem.com, theirPubId, DIRECT, theirTagId"
     return Response(ads_content, mimetype='text/plain')
+
+
+# ==============================================================================
+# --- 6b. Discovery, syndication, PWA and operations endpoints ---
+# ==============================================================================
+
+def _xml_escape(text):
+    return (str(text or '')
+            .replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            .replace('"', '&quot;').replace("'", '&apos;'))
+
+
+@app.route('/feed.xml')
+@app.route('/rss')
+def rss_feed():
+    """RSS 2.0 feed of the newest community articles."""
+    try:
+        articles = (CommunityArticle.query
+                    .options(joinedload(CommunityArticle.author))
+                    .order_by(CommunityArticle.published_at.desc())
+                    .limit(40).all())
+    except Exception as e:
+        app.logger.error(f"RSS feed query failed: {e}", exc_info=True)
+        articles = []
+
+    items = []
+    for art in articles:
+        link = url_for('article_detail', article_hash_id=art.article_hash_id, _external=True)
+        published = art.published_at
+        if published and published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        pub_date = published.strftime('%a, %d %b %Y %H:%M:%S %z') if published else ''
+        description = art.groq_summary or art.description or ''
+        items.append(
+            "<item>"
+            f"<title>{_xml_escape(art.title)}</title>"
+            f"<link>{_xml_escape(link)}</link>"
+            f"<guid isPermaLink=\"true\">{_xml_escape(link)}</guid>"
+            f"<description>{_xml_escape(description)}</description>"
+            f"<author>{_xml_escape(art.author.name if art.author else 'BrieflyAI')}</author>"
+            f"<pubDate>{_xml_escape(pub_date)}</pubDate>"
+            "</item>"
+        )
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>'
+        '<title>BrieflyAI - Community Stories</title>'
+        f'<link>{_xml_escape(url_for("index", _external=True))}</link>'
+        '<description>AI-summarized, India-centric news and community perspectives.</description>'
+        '<language>en-in</language>'
+        f'<atom:link href="{_xml_escape(url_for("rss_feed", _external=True))}" rel="self" type="application/rss+xml" />'
+        + ''.join(items) +
+        '</channel></rss>'
+    )
+    return Response(xml, mimetype='application/rss+xml')
+
+
+@app.route('/sitemap.xml')
+def sitemap():
+    """Sitemap covering static pages, category listings and community articles."""
+    urls = []
+
+    def add(loc, changefreq, priority, lastmod=None):
+        entry = f"<url><loc>{_xml_escape(loc)}</loc>"
+        if lastmod:
+            entry += f"<lastmod>{lastmod.strftime('%Y-%m-%d')}</lastmod>"
+        entry += f"<changefreq>{changefreq}</changefreq><priority>{priority}</priority></url>"
+        urls.append(entry)
+
+    add(url_for('index', _external=True), 'hourly', '1.0')
+    for endpoint in ('about', 'contact', 'privacy'):
+        add(url_for(endpoint, _external=True), 'monthly', '0.4')
+    for category in app.config['CATEGORIES']:
+        add(url_for('index', category_name=category, page=1, _external=True), 'hourly', '0.8')
+
+    try:
+        for art in (CommunityArticle.query
+                    .order_by(CommunityArticle.published_at.desc())
+                    .limit(2000).all()):
+            add(url_for('article_detail', article_hash_id=art.article_hash_id, _external=True),
+                'weekly', '0.7', art.published_at)
+    except Exception as e:
+        app.logger.error(f"Sitemap query failed: {e}", exc_info=True)
+
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+           + ''.join(urls) + '</urlset>')
+    return Response(xml, mimetype='application/xml')
+
+
+@app.route('/robots.txt')
+def robots_txt():
+    lines = [
+        "User-agent: *",
+        "Allow: /",
+        # Keep crawlers out of personal and action endpoints.
+        "Disallow: /profile",
+        "Disallow: /login",
+        "Disallow: /register",
+        "Disallow: /logout",
+        "Disallow: /toggle_bookmark/",
+        "Disallow: /add_comment/",
+        "Disallow: /vote_comment/",
+        "",
+        f"Sitemap: {url_for('sitemap', _external=True)}",
+    ]
+    return Response("\n".join(lines), mimetype='text/plain')
+
+
+@app.route('/related/<article_hash_id>')
+def related_articles(article_hash_id):
+    """Related community articles, scored by title/description word overlap."""
+    STOPWORDS = {
+        'the', 'and', 'for', 'with', 'that', 'this', 'from', 'has', 'have', 'was', 'are',
+        'not', 'but', 'its', 'his', 'her', 'they', 'their', 'you', 'who', 'what', 'why',
+        'how', 'will', 'can', 'been', 'over', 'after', 'says', 'said', 'new', 'more',
+    }
+
+    def keywords(text):
+        words = re.findall(r"[a-z0-9]{3,}", (text or '').lower())
+        return {w for w in words if w not in STOPWORDS}
+
+    try:
+        current = CommunityArticle.query.filter_by(article_hash_id=article_hash_id).first()
+        if not current:
+            return jsonify({"success": True, "articles": []})
+
+        target = keywords(current.title) | keywords(current.description)
+        candidates = (CommunityArticle.query
+                      .options(joinedload(CommunityArticle.author))
+                      .filter(CommunityArticle.id != current.id)
+                      .order_by(CommunityArticle.published_at.desc())
+                      .limit(200).all())
+
+        scored = []
+        for art in candidates:
+            overlap = len(target & (keywords(art.title) | keywords(art.description)))
+            if overlap:
+                scored.append((overlap, art))
+        scored.sort(key=lambda pair: (pair[0], pair[1].published_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+
+        results = [{
+            "title": art.title,
+            "url": url_for('article_detail', article_hash_id=art.article_hash_id),
+            "source": art.author.name if art.author else art.source_name,
+            "image_url": art.image_url,
+        } for _, art in scored[:4]]
+        return jsonify({"success": True, "articles": results})
+    except Exception as e:
+        app.logger.error(f"Related articles lookup failed for {article_hash_id}: {e}", exc_info=True)
+        return jsonify({"success": True, "articles": []})
+
+
+@app.route('/manifest.webmanifest')
+def web_manifest():
+    manifest = {
+        "name": "BrieflyAI",
+        "short_name": "BrieflyAI",
+        "description": "AI-summarized, India-centric news.",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#F6F5F2",
+        "theme_color": "#0B0C10",
+        "icons": [{
+            "src": url_for('app_icon', size=size),
+            "sizes": f"{size}x{size}",
+            "type": "image/svg+xml",
+            "purpose": "any",
+        } for size in (192, 512)],
+    }
+    return Response(json.dumps(manifest), mimetype='application/manifest+json')
+
+
+@app.route('/icon-<int:size>.svg')
+def app_icon(size):
+    """Self-contained SVG app icon, so the PWA needs no binary asset files."""
+    size = 512 if size not in (192, 512) else size
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="{size}" height="{size}">'
+        '<rect width="512" height="512" rx="96" fill="#0B0C10"/>'
+        '<path d="M286 60 154 292h84l-24 160 148-236h-88z" fill="#14B8A6"/>'
+        '</svg>'
+    )
+    return Response(svg, mimetype='image/svg+xml',
+                    headers={'Cache-Control': 'public, max-age=604800'})
+
+
+@app.route('/offline')
+def offline_page():
+    return render_template("OFFLINE_TEMPLATE")
+
+
+@app.route('/sw.js')
+def service_worker():
+    """
+    Service worker: network-first for pages (news must stay fresh), cache-first for
+    static CDN assets, and an offline fallback page. Served from the app root so its
+    scope covers the whole site.
+    """
+    sw = """
+const VERSION = 'brieflyai-v1';
+const OFFLINE_URL = '/offline';
+const PRECACHE = [OFFLINE_URL, '/manifest.webmanifest'];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(VERSION).then((cache) => cache.addAll(PRECACHE)).then(() => self.skipWaiting())
+  );
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+
+  const url = new URL(req.url);
+
+  // Never cache authenticated or mutating endpoints.
+  if (/^\\/(login|logout|register|profile|add_comment|vote_comment|delete_comment|edit_comment|toggle_bookmark|post_article|report_article)/.test(url.pathname)) {
+    return;
+  }
+
+  // Static assets from our allowed CDNs: cache-first, they are versioned URLs.
+  if (url.origin !== self.location.origin) {
+    event.respondWith(
+      caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+        if (res && res.status === 200) {
+          const copy = res.clone();
+          caches.open(VERSION).then((c) => c.put(req, copy));
+        }
+        return res;
+      }).catch(() => hit))
+    );
+    return;
+  }
+
+  // Pages: network-first so news is always current, cache as a fallback.
+  event.respondWith(
+    fetch(req).then((res) => {
+      if (res && res.status === 200 && res.type === 'basic') {
+        const copy = res.clone();
+        caches.open(VERSION).then((c) => c.put(req, copy));
+      }
+      return res;
+    }).catch(() =>
+      caches.match(req).then((hit) => hit || (req.mode === 'navigate' ? caches.match(OFFLINE_URL) : undefined))
+    )
+  );
+});
+"""
+    return Response(sw, mimetype='application/javascript',
+                    headers={'Cache-Control': 'no-cache'})
+
+
+def _record_article_view(article_hash_id):
+    """
+    Increment an article's view counter. Analytics must never break page rendering,
+    so every failure here is swallowed after logging.
+    """
+    if not article_hash_id:
+        return
+    try:
+        stat = ArticleStat.query.filter_by(article_hash_id=article_hash_id).first()
+        if stat:
+            stat.view_count = (stat.view_count or 0) + 1
+            stat.last_viewed_at = datetime.now(timezone.utc)
+        else:
+            db.session.add(ArticleStat(
+                article_hash_id=article_hash_id, view_count=1,
+                last_viewed_at=datetime.now(timezone.utc)))
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        app.logger.warning(f"Could not record view for {article_hash_id}: {e}")
+
+
+def search_community_articles(query_str, limit=60):
+    """
+    Search community posts by title, description and body.
+
+    Previously /search only queried NewsAPI, so community posts were effectively
+    invisible -- you could not find a story through search right after posting it.
+    """
+    if not query_str:
+        return []
+    try:
+        terms = [t for t in re.split(r"\s+", query_str.strip()) if len(t) >= 2][:6]
+        if not terms:
+            return []
+        conditions = []
+        for term in terms:
+            like = f"%{term.lower()}%"
+            conditions.append(db.or_(
+                func.lower(CommunityArticle.title).like(like),
+                func.lower(CommunityArticle.description).like(like),
+                func.lower(CommunityArticle.full_text).like(like),
+            ))
+        return (CommunityArticle.query
+                .options(joinedload(CommunityArticle.author))
+                .filter(db.and_(*conditions))
+                .order_by(CommunityArticle.published_at.desc())
+                .limit(limit).all())
+    except Exception as e:
+        app.logger.error(f"Community search failed for {query_str!r}: {e}", exc_info=True)
+        return []
+
+
+@app.route('/trending')
+def trending():
+    """Most-viewed articles over the last week, as JSON for the homepage strip."""
+    try:
+        since = datetime.now(timezone.utc) - timedelta(days=7)
+        stats = (ArticleStat.query
+                 .filter(ArticleStat.last_viewed_at >= since)
+                 .order_by(ArticleStat.view_count.desc())
+                 .limit(20).all())
+        results = []
+        for stat in stats:
+            art = CommunityArticle.query.filter_by(article_hash_id=stat.article_hash_id).first()
+            if art:
+                title, source = art.title, (art.author.name if art.author else art.source_name)
+            else:
+                cached = MASTER_ARTICLE_STORE.get(stat.article_hash_id)
+                if not cached:
+                    continue  # article aged out of the cache; skip rather than show a dead row
+                title = cached.get('title')
+                source = (cached.get('source') or {}).get('name', 'Unknown')
+            results.append({
+                "title": title,
+                "source": source,
+                "views": stat.view_count,
+                "url": url_for('article_detail', article_hash_id=stat.article_hash_id),
+            })
+            if len(results) >= 5:
+                break
+        return jsonify({"success": True, "articles": results})
+    except Exception as e:
+        app.logger.error(f"Trending lookup failed: {e}", exc_info=True)
+        return jsonify({"success": True, "articles": []})
+
+
+@app.route('/account/export')
+@login_required
+def export_my_data():
+    """Download everything this account holds, as JSON."""
+    try:
+        user = User.query.get(session['user_id'])
+        if not user:
+            abort(404)
+        payload = {
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "account": {
+                "name": user.name,
+                "username": user.username,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+            },
+            "articles": [{
+                "title": a.title,
+                "description": a.description,
+                "full_text": a.full_text,
+                "published_at": a.published_at.isoformat() if a.published_at else None,
+                "url": url_for('article_detail', article_hash_id=a.article_hash_id, _external=True),
+            } for a in user.articles],
+            "comments": [{
+                "content": c.content,
+                "timestamp": c.timestamp.isoformat() if c.timestamp else None,
+            } for c in user.comments],
+            "bookmarks": [{
+                "title": b.title_cache,
+                "source": b.source_name_cache,
+                "bookmarked_at": b.bookmarked_at.isoformat() if b.bookmarked_at else None,
+                "url": url_for('article_detail', article_hash_id=b.article_hash_id, _external=True),
+            } for b in user.bookmarks],
+        }
+        filename = f"brieflyai-export-{user.username}-{datetime.now(timezone.utc).date()}.json"
+        return Response(
+            json.dumps(payload, indent=2),
+            mimetype='application/json',
+            headers={'Content-Disposition': f'attachment; filename="{filename}"'})
+    except Exception as e:
+        app.logger.error(f"Data export failed: {e}", exc_info=True)
+        flash("Could not build your export right now. Please try again.", "danger")
+        return redirect(url_for('profile'))
+
+
+@app.route('/account/delete', methods=['POST'])
+@login_required
+@rate_limit(3, 3600, scope='delete_account')
+def delete_account():
+    """
+    Permanently delete the account. Requires the password again, so a stolen session
+    alone can't destroy someone's data.
+    """
+    user = User.query.get(session['user_id'])
+    if not user:
+        session.clear()
+        return redirect(url_for('index'))
+
+    password = request.form.get('password', '')
+    if not password or not check_password_hash(user.password_hash, password):
+        flash("Password incorrect. Your account has not been deleted.", "danger")
+        return redirect(url_for('profile'))
+
+    username = user.username
+    try:
+        # Comments/articles/bookmarks/votes cascade via the relationships.
+        db.session.delete(user)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Account deletion failed for {username}: {e}", exc_info=True)
+        flash("Could not delete your account right now. Please try again.", "danger")
+        return redirect(url_for('profile'))
+
+    session.clear()
+    app.logger.info(f"Account deleted: {username}")
+    flash("Your account and all associated data have been permanently deleted.", "info")
+    return redirect(url_for('index'))
+
+
+@app.route('/healthz')
+def health_check():
+    """Liveness/readiness probe for the host platform."""
+    status = {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+    code = 200
+    try:
+        db.session.execute(db.text('SELECT 1'))
+        status["database"] = "ok"
+    except Exception as e:
+        app.logger.error(f"Health check DB failure: {e}")
+        status["status"] = "degraded"
+        status["database"] = "error"
+        code = 503
+    status["ai"] = "ok" if groq_client else "disabled"
+    status["news_api"] = "ok" if newsapi else "disabled"
+    status["caches"] = {
+        "article_store": MASTER_ARTICLE_STORE.stats(),
+        "api_cache": API_CACHE.stats(),
+    }
+    return jsonify(status), code
+
 # ==============================================================================
 # --- 7. HTML Templates (Stored in memory) ---
 # ==============================================================================
@@ -1567,7 +2510,26 @@ BASE_HTML_TEMPLATE = """
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0B0C10">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="manifest" href="{{ url_for('web_manifest') }}">
+    <link rel="icon" href="{{ url_for('app_icon', size=192) }}" type="image/svg+xml">
+    <link rel="alternate" type="application/rss+xml" title="BrieflyAI - Community Stories" href="{{ url_for('rss_feed') }}">
     <title>{% block title %}BrieflyAI{% endblock %}</title>
+
+    {# --- SEO / social sharing. Pages override the inner blocks. --- #}
+    {% block meta %}
+    <meta name="description" content="{% block meta_description %}AI-summarized, India-centric news. Get the key facts in seconds.{% endblock %}">
+    <link rel="canonical" href="{% block canonical_url %}{{ request.base_url }}{% endblock %}">
+    <meta property="og:site_name" content="BrieflyAI">
+    <meta property="og:type" content="{% block og_type %}website{% endblock %}">
+    <meta property="og:title" content="{% block og_title %}BrieflyAI{% endblock %}">
+    <meta property="og:description" content="{% block og_description %}AI-summarized, India-centric news. Get the key facts in seconds.{% endblock %}">
+    <meta property="og:url" content="{% block og_url %}{{ request.base_url }}{% endblock %}">
+    {% block og_image %}{% endblock %}
+    <meta name="twitter:card" content="{% block twitter_card %}summary_large_image{% endblock %}">
+    <meta name="twitter:title" content="{{ self.og_title() }}">
+    <meta name="twitter:description" content="{{ self.og_description() }}">
+    {% endblock %}
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1660,7 +2622,10 @@ BASE_HTML_TEMPLATE = """
            BASE
            ========================================================================== */
         *, *::before, *::after { box-sizing: border-box; }
-        html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+        /* overflow-x must live on html, not body: setting it on body makes body its own
+           scroll container (overflow-y computes to auto), which stops window.scrollY from
+           tracking the page and silently breaks the progress bar, parallax and nav state. */
+        html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; overflow-x: hidden; }
         ::selection { background: rgba(var(--primary-color-rgb), 0.22); }
         body {
             padding-top: 84px; margin: 0; font-family: var(--font-sans); font-size: 1rem; line-height: 1.65;
@@ -1668,7 +2633,6 @@ BASE_HTML_TEMPLATE = """
             display: flex; flex-direction: column; min-height: 100vh;
             transition: background-color 0.35s var(--ease-standard), color 0.35s var(--ease-standard);
             -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
-            overflow-x: hidden;
         }
         .main-content { flex-grow: 1; }
         p { max-width: 75ch; }
@@ -2094,6 +3058,84 @@ BASE_HTML_TEMPLATE = """
         .synthesis-keywords .keyword-tag:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; transform: translateY(-2px); }
 
         /* ==========================================================================
+           READING PROGRESS BAR
+           ========================================================================== */
+        .reading-progress { position: fixed; top: 0; left: 0; height: 3px; width: 100%; z-index: 1050; background: transparent; pointer-events: none; }
+        .reading-progress__fill { height: 100%; width: 0%; background-image: linear-gradient(90deg, var(--primary-light), var(--secondary-color)); transform-origin: left; transition: width 80ms linear; }
+
+        /* ==========================================================================
+           ARTICLE TOOLBAR (read time, listen, text size, share)
+           ========================================================================== */
+        .article-toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.85rem 0; margin: 1.25rem 0; border-top: 1px solid var(--card-border-color); border-bottom: 1px solid var(--card-border-color); }
+        .toolbar-btn { display: inline-flex; align-items: center; gap: 0.4rem; background: none; border: 1px solid var(--card-border-color); color: var(--text-muted-color); border-radius: var(--border-radius-pill); padding: 0.35rem 0.85rem; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); white-space: nowrap; }
+        .toolbar-btn:hover { color: var(--primary-color); border-color: var(--primary-color); transform: translateY(-1px); }
+        .toolbar-btn.is-active { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; }
+        .read-time-badge { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted-color); margin-right: auto; }
+        .read-time-badge i { color: var(--secondary-color); }
+        .toolbar-spacer { margin-left: auto; }
+
+        /* Share menu */
+        .share-wrap { position: relative; }
+        .share-menu { display: none; position: absolute; right: 0; bottom: calc(100% + 8px); background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); box-shadow: var(--shadow-lg); padding: 0.4rem; min-width: 190px; z-index: 20; animation: fadeInUp 0.22s var(--ease-spring); }
+        .share-menu.show { display: block; }
+        .share-menu button, .share-menu a { display: flex; align-items: center; gap: 0.65rem; width: 100%; background: none; border: none; color: var(--text-color); text-decoration: none; padding: 0.55rem 0.75rem; border-radius: var(--border-radius-sm); font-size: 0.86rem; font-weight: 500; text-align: left; transition: background-color var(--duration-fast) var(--ease-standard); }
+        .share-menu button:hover, .share-menu a:hover { background-color: var(--light-bg); color: var(--text-color); }
+        .share-menu i { width: 1.1rem; text-align: center; }
+        .share-menu .i-whatsapp { color: #25D366; } .share-menu .i-x { color: var(--text-color); }
+        .share-menu .i-facebook { color: #1877F2; } .share-menu .i-linkedin { color: #0A66C2; }
+        .share-menu .i-link { color: var(--primary-color); }
+
+        /* Text-size presets, applied to the article body */
+        .article-full-content-wrapper[data-text-size="large"] .content-text,
+        .article-full-content-wrapper[data-text-size="large"] .summary-box p,
+        .article-full-content-wrapper[data-text-size="large"] .takeaways-box li { font-size: 1.22rem; line-height: 1.85; }
+        .article-full-content-wrapper[data-text-size="xlarge"] .content-text,
+        .article-full-content-wrapper[data-text-size="xlarge"] .summary-box p,
+        .article-full-content-wrapper[data-text-size="xlarge"] .takeaways-box li { font-size: 1.4rem; line-height: 1.9; }
+        .tts-highlight { background: rgba(var(--accent-color-rgb), 0.22); border-radius: 3px; }
+
+        /* ==========================================================================
+           RECENTLY VIEWED STRIP
+           ========================================================================== */
+        .recent-strip { margin-bottom: 2rem; }
+        .recent-strip__head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 0.85rem; }
+        .recent-strip__list { display: flex; gap: 0.85rem; overflow-x: auto; padding-bottom: 0.5rem; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+        .recent-strip__list::-webkit-scrollbar { height: 6px; }
+        .recent-item { flex: 0 0 clamp(200px, 44vw, 260px); scroll-snap-align: start; background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); padding: 0.85rem 1rem; text-decoration: none; color: var(--text-color); transition: transform var(--duration-base) var(--ease-premium), box-shadow var(--duration-base) var(--ease-premium), border-color var(--duration-base) var(--ease-standard); }
+        .recent-item:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: rgba(var(--primary-color-rgb), 0.35); color: var(--text-color); }
+        .recent-item__title { font-size: 0.88rem; font-weight: 700; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 0.35rem; letter-spacing: -0.02em; }
+        .recent-item__source { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; color: var(--text-muted-color); }
+        .link-btn { background: none; border: none; color: var(--text-muted-color); font-size: 0.78rem; font-weight: 600; text-decoration: underline; text-underline-offset: 0.2em; padding: 0; }
+        .link-btn:hover { color: var(--primary-color); }
+
+        /* ==========================================================================
+           KEYBOARD SHORTCUTS
+           ========================================================================== */
+        .kbd-list { display: grid; grid-template-columns: 1fr auto; gap: 0.6rem 1.5rem; align-items: center; }
+        .kbd-list dt { color: var(--text-color); font-size: 0.9rem; }
+        .kbd-list dd { margin: 0; text-align: right; }
+        kbd { font-family: var(--font-mono); font-size: 0.75rem; background: var(--light-bg); border: 1px solid var(--card-border-color); border-bottom-width: 2px; border-radius: var(--border-radius-xs); padding: 0.15rem 0.45rem; color: var(--text-color); }
+
+        /* Comment sort control */
+        .comment-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+        .sort-select { font-size: 0.82rem; font-weight: 600; padding: 0.35rem 2rem 0.35rem 0.75rem; border-radius: var(--border-radius-pill); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); width: auto; }
+
+        /* ==========================================================================
+           PRINT
+           ========================================================================== */
+        @media print {
+            .navbar-main, .offcanvas, footer, .admin-controls, .article-toolbar, .reading-progress,
+            #alert-placeholder, .comment-section, .recent-strip, .modal, .offcanvas-backdrop,
+            .bookmark-btn, .read-more, .pagination, .btn { display: none !important; }
+            body { padding-top: 0; background: #fff; color: #000; font-size: 12pt; }
+            .article-full-content-wrapper { box-shadow: none; border: none; padding: 0; max-width: 100%; }
+            .summary-box, .takeaways-box { border: 1px solid #ccc; background: none !important; break-inside: avoid; }
+            .content-text, p { max-width: none; }
+            a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 9pt; color: #555; word-break: break-all; }
+            .hero-image-wrap { max-height: 240px; break-inside: avoid; }
+        }
+
+        /* ==========================================================================
            RESPONSIVE
            ========================================================================== */
         @media (max-width: 991.98px) {
@@ -2262,6 +3304,30 @@ BASE_HTML_TEMPLATE = """
         </div>
     </div>
 
+    <div class="modal fade" id="shortcutsModal" tabindex="-1" aria-hidden="true" aria-labelledby="shortcutsModalLabel">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header border-0 pb-2">
+                    <h2 class="modal-title h5" id="shortcutsModalLabel"><i class="fas fa-keyboard me-2" aria-hidden="true"></i>Keyboard shortcuts</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <dl class="kbd-list mb-0">
+                        <dt>Focus search</dt><dd><kbd>/</kbd></dd>
+                        <dt>Open menu</dt><dd><kbd>m</kbd></dd>
+                        <dt>Toggle dark mode</dt><dd><kbd>d</kbd></dd>
+                        <dt>Go to homepage</dt><dd><kbd>g</kbd> <kbd>h</kbd></dd>
+                        <dt>Go to profile</dt><dd><kbd>g</kbd> <kbd>p</kbd></dd>
+                        <dt>Bookmark this article</dt><dd><kbd>b</kbd></dd>
+                        <dt>Jump to comments</dt><dd><kbd>c</kbd></dd>
+                        <dt>Back to top</dt><dd><kbd>t</kbd></dd>
+                        <dt>Show this help</dt><dd><kbd>?</kbd></dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="alert-placeholder">
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
@@ -2294,7 +3360,12 @@ BASE_HTML_TEMPLATE = """
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
+                    <p class="small text-muted d-flex align-items-center gap-2 mb-3" id="draftStatus" hidden>
+                        <i class="fas fa-cloud-arrow-up" aria-hidden="true"></i><span id="draftStatusText">Draft saved</span>
+                        <button type="button" class="link-btn ms-auto" id="discardDraftBtn">Discard draft</button>
+                    </p>
                     <form id="addArticleForm" action="{{ url_for('post_article') }}" method="POST">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <div class="mb-3"><label for="articleTitle" class="form-label">Article Title</label><input type="text" id="articleTitle" name="title" class="form-control" required></div>
                         <div class="mb-3"><label for="articleDescription" class="form-label">Short Description</label><textarea id="articleDescription" name="description" class="form-control" rows="3" required></textarea></div>
                         <div class="mb-3"><label for="articleSource" class="form-label">Source Name</label><input type="text" id="articleSource" name="sourceName" class="form-control" value="Community Post" required></div>
@@ -2328,6 +3399,7 @@ BASE_HTML_TEMPLATE = """
                         <a href="{{ url_for('about') }}">About Us</a>
                         <a href="{{ url_for('contact') }}">Contact</a>
                         <a href="{{ url_for('privacy') }}">Privacy Policy</a>
+                        <a href="{{ url_for('rss_feed') }}">RSS Feed</a>
                         {% if session.user_id %}<a href="{{ url_for('profile') }}">My Profile</a>{% endif %}
                     </div>
                 </div>
@@ -2341,6 +3413,7 @@ BASE_HTML_TEMPLATE = """
                     <h5>Newsletter</h5>
                     <p class="small text-light">Subscribe for weekly updates!</p>
                     <form action="{{ url_for('subscribe') }}" method="POST" class="mt-3">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <label for="footerNewsletterEmail" class="visually-hidden">Your email</label>
                         <div class="input-group">
                             <input type="email" id="footerNewsletterEmail" name="email" class="form-control form-control-sm footer-newsletter-input" placeholder="Your Email" aria-label="Your Email" required>
@@ -2360,6 +3433,28 @@ BASE_HTML_TEMPLATE = """
     <script>
     window.BrieflyAI = window.BrieflyAI || {};
     BrieflyAI.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    /* --- CSRF ---------------------------------------------------------------
+       Every state-changing request must carry the session's CSRF token, or the
+       server rejects it. postJSON() is the single place that guarantees this. */
+    BrieflyAI.csrfToken = (function () {
+        var meta = document.querySelector('meta[name="csrf-token"]');
+        return meta ? meta.getAttribute('content') : '';
+    })();
+
+    BrieflyAI.postJSON = function (url, body, options) {
+        options = options || {};
+        return fetch(url, {
+            method: options.method || 'POST',
+            credentials: 'same-origin',
+            headers: Object.assign({
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRFToken': BrieflyAI.csrfToken
+            }, options.headers || {}),
+            body: body === undefined ? undefined : JSON.stringify(body)
+        });
+    };
 
     BrieflyAI.debounce = function (fn, wait) {
         wait = wait || 300;
@@ -2513,11 +3608,138 @@ BASE_HTML_TEMPLATE = """
         });
     };
 
+    /* --- Sharing ------------------------------------------------------------
+       Uses the native share sheet where available (mobile), falls back to a
+       menu of per-network intent URLs plus copy-to-clipboard. */
+    BrieflyAI.share = {
+        targets: function (url, title) {
+            var u = encodeURIComponent(url), t = encodeURIComponent(title || '');
+            return {
+                whatsapp: 'https://wa.me/?text=' + t + '%20' + u,
+                x: 'https://twitter.com/intent/tweet?url=' + u + '&text=' + t,
+                facebook: 'https://www.facebook.com/sharer/sharer.php?u=' + u,
+                linkedin: 'https://www.linkedin.com/sharing/share-offsite/?url=' + u
+            };
+        },
+        native: function (url, title, text) {
+            if (!navigator.share) { return Promise.reject(new Error('unsupported')); }
+            return navigator.share({ title: title, text: text || title, url: url });
+        },
+        copy: function (url) {
+            if (navigator.clipboard && window.isSecureContext) {
+                return navigator.clipboard.writeText(url);
+            }
+            // Fallback for non-HTTPS / older browsers.
+            return new Promise(function (resolve, reject) {
+                try {
+                    var ta = document.createElement('textarea');
+                    ta.value = url;
+                    ta.setAttribute('readonly', '');
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    var ok = document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    ok ? resolve() : reject(new Error('copy failed'));
+                } catch (e) { reject(e); }
+            });
+        }
+    };
+
+    /* --- Recently viewed (per-browser, never leaves the device) -------------- */
+    BrieflyAI.recent = {
+        KEY: 'brieflyai:recent',
+        MAX: 8,
+        read: function () {
+            try {
+                var raw = localStorage.getItem(this.KEY);
+                var list = raw ? JSON.parse(raw) : [];
+                return Array.isArray(list) ? list : [];
+            } catch (e) { return []; }
+        },
+        add: function (item) {
+            if (!item || !item.url || !item.title) { return; }
+            try {
+                var list = this.read().filter(function (x) { return x.url !== item.url; });
+                list.unshift({ url: item.url, title: item.title, source: item.source || '' });
+                localStorage.setItem(this.KEY, JSON.stringify(list.slice(0, this.MAX)));
+            } catch (e) { /* storage unavailable -- feature simply does nothing */ }
+        },
+        clear: function () {
+            try { localStorage.removeItem(this.KEY); } catch (e) {}
+        }
+    };
+
+    /* --- Keyboard shortcuts -------------------------------------------------- */
+    BrieflyAI.initShortcuts = function () {
+        var pendingG = false, gTimer = null;
+        function isTyping(el) {
+            if (!el) { return false; }
+            var tag = el.tagName;
+            return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+        }
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey || e.metaKey || e.altKey) { return; }
+            if (isTyping(document.activeElement)) { return; }
+            // Don't hijack keys while a dialog is open.
+            if (document.querySelector('.modal.show') && e.key !== '?') { return; }
+
+            var k = e.key;
+
+            if (pendingG) {
+                pendingG = false;
+                clearTimeout(gTimer);
+                if (k === 'h') { e.preventDefault(); window.location.href = "{{ url_for('index') }}"; return; }
+                if (k === 'p') { e.preventDefault(); window.location.href = "{{ url_for('profile') if session.user_id else url_for('login') }}"; return; }
+            }
+
+            switch (k) {
+                case '/':
+                    e.preventDefault();
+                    var search = document.getElementById('navbarSearchInput');
+                    if (search && search.offsetParent !== null) { search.focus(); search.select(); }
+                    else { document.querySelector('[data-bs-target="#mainOffcanvas"]').click(); }
+                    break;
+                case '?':
+                    e.preventDefault();
+                    if (window.bootstrap) { bootstrap.Modal.getOrCreateInstance(document.getElementById('shortcutsModal')).show(); }
+                    break;
+                case 'm':
+                    e.preventDefault();
+                    document.querySelector('[data-bs-target="#mainOffcanvas"]').click();
+                    break;
+                case 'd':
+                    e.preventDefault();
+                    var t = document.querySelector('.dark-mode-toggle');
+                    if (t) { t.click(); }
+                    break;
+                case 't':
+                    e.preventDefault();
+                    window.scrollTo({ top: 0, behavior: BrieflyAI.reducedMotion ? 'auto' : 'smooth' });
+                    break;
+                case 'b':
+                    var bm = document.getElementById('bookmarkBtn');
+                    if (bm) { e.preventDefault(); bm.click(); }
+                    break;
+                case 'c':
+                    var cs = document.getElementById('comment-section');
+                    if (cs) { e.preventDefault(); cs.scrollIntoView({ behavior: BrieflyAI.reducedMotion ? 'auto' : 'smooth' }); }
+                    break;
+                case 'g':
+                    pendingG = true;
+                    gTimer = setTimeout(function () { pendingG = false; }, 1200);
+                    break;
+            }
+        });
+    };
+
     document.addEventListener('DOMContentLoaded', function () {
         try {
             BrieflyAI.initImageLoadStates();
             BrieflyAI.initScrollReveal();
             BrieflyAI.initParallax();
+            BrieflyAI.initShortcuts();
 
             var navbar = document.getElementById('mainNavbar');
             if (navbar) {
@@ -2556,8 +3778,92 @@ BASE_HTML_TEMPLATE = """
                 darkModeToggle.addEventListener('click', () => {
                     applyTheme(body.classList.contains('dark-mode') ? 'disabled' : 'enabled');
                 });
+                // First visit only: follow the OS setting rather than defaulting to light.
+                try {
+                    if (!localStorage.getItem('darkMode')) {
+                        if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                            applyTheme('enabled');
+                        }
+                    }
+                } catch (e) { /* storage blocked - keep the server-rendered theme */ }
+
                 updateThemeUI();
             }
+
+            // Draft autosave for the article composer, so a mis-click or refresh
+            // doesn't discard a long post.
+            (function () {
+                var form = document.getElementById('addArticleForm');
+                var statusEl = document.getElementById('draftStatus');
+                if (!form || !statusEl) { return; }
+                var KEY = 'brieflyai:articleDraft';
+                var fields = ['title', 'description', 'sourceName', 'imageUrl', 'content'];
+                var statusText = document.getElementById('draftStatusText');
+                var submitted = false;
+
+                function fieldEl(name) { return form.querySelector('[name="' + name + '"]'); }
+
+                function restore() {
+                    try {
+                        var raw = localStorage.getItem(KEY);
+                        if (!raw) { return; }
+                        var draft = JSON.parse(raw);
+                        var restoredAny = false;
+                        fields.forEach(function (f) {
+                            var el = fieldEl(f);
+                            if (el && draft[f]) { el.value = draft[f]; restoredAny = true; }
+                        });
+                        if (restoredAny) {
+                            statusEl.hidden = false;
+                            statusText.textContent = 'Unsent draft restored';
+                        }
+                    } catch (e) { /* corrupt draft - ignore it */ }
+                }
+
+                var save = BrieflyAI.debounce(function () {
+                    if (submitted) { return; }
+                    var draft = {};
+                    var hasContent = false;
+                    fields.forEach(function (f) {
+                        var el = fieldEl(f);
+                        if (el && el.value.trim()) { draft[f] = el.value; hasContent = true; }
+                    });
+                    try {
+                        if (hasContent) {
+                            localStorage.setItem(KEY, JSON.stringify(draft));
+                            statusEl.hidden = false;
+                            statusText.textContent = 'Draft saved';
+                        } else {
+                            localStorage.removeItem(KEY);
+                            statusEl.hidden = true;
+                        }
+                    } catch (e) { /* storage full or blocked */ }
+                }, 700);
+
+                fields.forEach(function (f) {
+                    var el = fieldEl(f);
+                    if (el) { el.addEventListener('input', save); }
+                });
+
+                form.addEventListener('submit', function () {
+                    submitted = true;
+                    try { localStorage.removeItem(KEY); } catch (e) {}
+                });
+
+                var discard = document.getElementById('discardDraftBtn');
+                if (discard) {
+                    discard.addEventListener('click', function () {
+                        try { localStorage.removeItem(KEY); } catch (e) {}
+                        fields.forEach(function (f) {
+                            var el = fieldEl(f);
+                            if (el) { el.value = el.name === 'sourceName' ? 'Community Post' : ''; }
+                        });
+                        statusEl.hidden = true;
+                    });
+                }
+
+                restore();
+            })();
 
             document.querySelectorAll('#alert-placeholder .alert').forEach(function (alert) {
                 setTimeout(function () {
@@ -2627,6 +3933,13 @@ BASE_HTML_TEMPLATE = """
     window.addEventListener('load', function () {
         if ('requestIdleCallback' in window) { requestIdleCallback(BrieflyAI.loadDeferredScripts, { timeout: 3000 }); }
         else { setTimeout(BrieflyAI.loadDeferredScripts, 1800); }
+
+        // Offline support. Registration failures are non-fatal by design.
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(function (err) {
+                console.warn('Service worker registration failed:', err);
+            });
+        }
     });
     </script>
     {% block scripts_extra %}{% endblock %}
@@ -2757,6 +4070,21 @@ INDEX_HTML_TEMPLATE = """
             </div>
         </article>
         {% endif %}
+
+        <section class="recent-strip" id="trendingStrip" hidden aria-labelledby="trendingHeading">
+            <div class="recent-strip__head">
+                <h2 class="section-heading h5 mb-0" id="trendingHeading"><i class="fas fa-arrow-trend-up me-2" aria-hidden="true"></i>Trending this week</h2>
+            </div>
+            <div class="recent-strip__list" id="trendingList"></div>
+        </section>
+
+        <section class="recent-strip" id="recentStrip" hidden aria-labelledby="recentStripHeading">
+            <div class="recent-strip__head">
+                <h2 class="section-heading h5 mb-0" id="recentStripHeading"><i class="fas fa-clock-rotate-left me-2" aria-hidden="true"></i>Pick up where you left off</h2>
+                <button type="button" class="link-btn" id="clearRecentBtn">Clear</button>
+            </div>
+            <div class="recent-strip__list" id="recentStripList"></div>
+        </section>
 
         <ul class="nav nav-tabs nav-fill mb-3" id="newsTab" role="tablist">
             <li class="nav-item" role="presentation">
@@ -2972,6 +4300,73 @@ INDEX_HTML_TEMPLATE = """
 {% block scripts_extra %}
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+    /* --- Recently viewed strip (reads local-only history; renders nothing if empty) --- */
+    (function () {
+        var strip = document.getElementById('recentStrip');
+        var list = document.getElementById('recentStripList');
+        if (!strip || !list || !window.BrieflyAI || !BrieflyAI.recent) { return; }
+
+        function render() {
+            var items = BrieflyAI.recent.read();
+            if (!items.length) { strip.hidden = true; return; }
+            list.textContent = '';
+            items.forEach(function (item) {
+                var a = document.createElement('a');
+                a.className = 'recent-item';
+                a.href = item.url;
+                var h3 = document.createElement('h3');
+                h3.className = 'recent-item__title';
+                h3.textContent = item.title;          // textContent, so stored titles can't inject markup
+                var span = document.createElement('span');
+                span.className = 'recent-item__source';
+                span.textContent = item.source || '';
+                a.appendChild(h3);
+                a.appendChild(span);
+                list.appendChild(a);
+            });
+            strip.hidden = false;
+            if (BrieflyAI.initScrollReveal) { BrieflyAI.initScrollReveal(strip); }
+        }
+
+        var clearBtn = document.getElementById('clearRecentBtn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', function () {
+                BrieflyAI.recent.clear();
+                render();
+                BrieflyAI.showToast('Reading history cleared.', 'success', 2500);
+            });
+        }
+        render();
+    })();
+
+    /* --- Trending strip (hidden entirely when there is nothing to show) --- */
+    (function () {
+        var strip = document.getElementById('trendingStrip');
+        var list = document.getElementById('trendingList');
+        if (!strip || !list) { return; }
+        fetch('{{ url_for("trending") }}', { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+                if (!data || !data.success || !data.articles || !data.articles.length) { return; }
+                data.articles.forEach(function (item) {
+                    var a = document.createElement('a');
+                    a.className = 'recent-item';
+                    a.href = item.url;
+                    var h3 = document.createElement('h3');
+                    h3.className = 'recent-item__title';
+                    h3.textContent = item.title;          // textContent: never trust server text as markup
+                    var span = document.createElement('span');
+                    span.className = 'recent-item__source';
+                    span.textContent = item.source + ' \u00b7 ' + item.views + (item.views === 1 ? ' view' : ' views');
+                    a.appendChild(h3); a.appendChild(span);
+                    list.appendChild(a);
+                });
+                strip.hidden = false;
+                if (BrieflyAI.initScrollReveal) { BrieflyAI.initScrollReveal(strip); }
+            })
+            .catch(function () { /* trending is a nicety; stay silent on failure */ });
+    })();
+
     const isUserLoggedInForHomepage = {{ 'true' if session.user_id else 'false' }};
     document.querySelectorAll('.homepage-bookmark-btn').forEach(button => {
         if (isUserLoggedInForHomepage) {
@@ -2985,11 +4380,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 const description = this.dataset.description;
                 const publishedAt = this.dataset.publishedAt;
                 const btnRef = this;
-                fetch(`{{ url_for('toggle_bookmark', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashId), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ is_community_article: isCommunity, title: title, source_name: sourceName, image_url: imageUrl, description: description, published_at: publishedAt })
-                })
+                BrieflyAI.postJSON(
+                    `{{ url_for('toggle_bookmark', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashId),
+                    { is_community_article: isCommunity, title: title, source_name: sourceName, image_url: imageUrl, description: description, published_at: publishedAt }
+                )
                 .then(res => { if (!res.ok) { return res.json().then(err => { throw new Error(err.error || `HTTP error! status: ${res.status}`); }); } return res.json(); })
                 .then(data => {
                     if (data.success) {
@@ -3016,6 +4410,41 @@ document.addEventListener('DOMContentLoaded', function () {
 ARTICLE_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}{{ article.title|truncate(50) if article else "Article" }} - BrieflyAI{% endblock %}
+
+{# Jinja hoists block definitions and gives each its own scope, so the values are
+   recomputed inside every block rather than shared via a top-level {% set %}. #}
+{% block meta_description %}{% if article %}{{ ((article.groq_summary if is_community_article and article.groq_summary else article.description) or 'AI-summarized news from BrieflyAI.')|striptags|truncate(155) }}{% else %}AI-summarized, India-centric news.{% endif %}{% endblock %}
+{% block og_type %}article{% endblock %}
+{% block og_title %}{% if article %}{{ article.title }}{% else %}Article not found{% endif %}{% endblock %}
+{% block og_description %}{% if article %}{{ ((article.groq_summary if is_community_article and article.groq_summary else article.description) or 'AI-summarized news from BrieflyAI.')|striptags|truncate(200) }}{% else %}AI-summarized, India-centric news.{% endif %}{% endblock %}
+{% block og_image %}
+    {% if article %}
+        {% set art_image = article.image_url if is_community_article else article.urlToImage %}
+        {% if art_image %}
+        <meta property="og:image" content="{{ art_image }}">
+        <meta name="twitter:image" content="{{ art_image }}">
+        <meta property="og:image:alt" content="{{ article.title|truncate(100) }}">
+        {% endif %}
+    {% endif %}
+{% endblock %}
+{% block head_extra %}
+{% if article %}
+{% set art_image = article.image_url if is_community_article else article.urlToImage %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "NewsArticle",
+  "headline": {{ article.title|truncate(110)|tojson }},
+  "description": {{ ((article.groq_summary if is_community_article and article.groq_summary else article.description) or '')|striptags|truncate(250)|tojson }},
+  {% if art_image %}"image": [{{ art_image|tojson }}],{% endif %}
+  "datePublished": {{ (article.published_at.isoformat() if is_community_article and article.published_at else (article.publishedAt if not is_community_article and article.publishedAt else ''))|tojson }},
+  "author": { "@type": "Person", "name": {{ (article.author.name if is_community_article and article.author else (article.source.name if not is_community_article and article.source else 'BrieflyAI'))|tojson }} },
+  "publisher": { "@type": "Organization", "name": "BrieflyAI" },
+  "mainEntityOfPage": { "@type": "WebPage", "@id": {{ request.base_url|tojson }} }
+}
+</script>
+{% endif %}
+{% endblock %}
 {% block content %}
 {% if not article %}
     <div class="state-card state-card-danger">
@@ -3025,7 +4454,8 @@ ARTICLE_HTML_TEMPLATE = """
         <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Go to Homepage</a></div>
     </div>
 {% else %}
-<article class="article-full-content-wrapper animate-fade-in">
+<div class="reading-progress" aria-hidden="true"><div class="reading-progress__fill" id="readingProgressFill"></div></div>
+<article class="article-full-content-wrapper animate-fade-in" id="articleWrapper" data-text-size="normal">
     <div class="mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
         <a href="{{ previous_list_page }}" class="btn btn-sm btn-outline-secondary"><i class="fas fa-arrow-left me-2" aria-hidden="true"></i>Back to List</a>
 
@@ -3062,6 +4492,38 @@ ARTICLE_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
+    <div class="article-toolbar" role="toolbar" aria-label="Article tools">
+        <span class="read-time-badge" id="readTimeBadge" {% if not is_community_article %}hidden{% endif %}>
+            <i class="far fa-clock" aria-hidden="true"></i>
+            <span id="readTimeValue">{% if is_community_article and article.full_text %}{{ [1, ((article.full_text|wordcount) / 220)|round(0, 'ceil')|int]|max }} min read{% endif %}</span>
+        </span>
+
+        <button type="button" class="toolbar-btn" id="listenBtn" hidden aria-pressed="false">
+            <i class="fas fa-headphones" aria-hidden="true"></i> <span class="listen-label">Listen</span>
+        </button>
+
+        <button type="button" class="toolbar-btn" id="textSizeBtn" aria-label="Change text size">
+            <i class="fas fa-font" aria-hidden="true"></i> <span id="textSizeLabel">Normal</span>
+        </button>
+
+        <div class="share-wrap">
+            <button type="button" class="toolbar-btn" id="shareBtn" aria-haspopup="true" aria-expanded="false" aria-controls="shareMenu">
+                <i class="fas fa-share-nodes" aria-hidden="true"></i> Share
+            </button>
+            <div class="share-menu" id="shareMenu" role="menu" aria-label="Share this article">
+                <a href="#" data-share="whatsapp" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="fab fa-whatsapp i-whatsapp" aria-hidden="true"></i> WhatsApp</a>
+                <a href="#" data-share="x" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="fab fa-x-twitter i-x" aria-hidden="true"></i> X (Twitter)</a>
+                <a href="#" data-share="facebook" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="fab fa-facebook i-facebook" aria-hidden="true"></i> Facebook</a>
+                <a href="#" data-share="linkedin" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="fab fa-linkedin i-linkedin" aria-hidden="true"></i> LinkedIn</a>
+                <button type="button" data-share="copy" role="menuitem"><i class="fas fa-link i-link" aria-hidden="true"></i> Copy link</button>
+            </div>
+        </div>
+
+        <button type="button" class="toolbar-btn" id="printBtn" aria-label="Print this article">
+            <i class="fas fa-print" aria-hidden="true"></i>
+        </button>
+    </div>
+
     <div id="contentLoader" class="ai-skeleton my-4 {% if is_community_article %}d-none{% endif %}" aria-hidden="true">
         <div class="ai-skeleton-box">
             <div class="ai-skeleton-label"></div>
@@ -3078,14 +4540,26 @@ ARTICLE_HTML_TEMPLATE = """
     </div>
     <div id="articleAnalysisContainer">
     {% if is_community_article %}
-        {% if article.groq_summary %}<div class="summary-box my-3"><h2><i class="fas fa-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">{{ article.groq_summary|replace('\\n', '<br>')|safe }}</p></div>{% endif %}
+        {% if article.groq_summary %}<div class="summary-box my-3"><h2><i class="fas fa-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">{{ article.groq_summary|e|replace('\\n', '<br>')|safe }}</p></div>{% endif %}
         {% if article.parsed_takeaways %}<div class="takeaways-box my-3"><h2><i class="fas fa-list-check me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>{% for takeaway in article.parsed_takeaways %}<li>{{ takeaway }}</li>{% endfor %}</ul></div>{% endif %}
         <hr class="my-4"><h2 class="content-divider-heading">Full Article Content</h2><div class="content-text">{{ article.full_text }}</div>
     {% else %}<div id="apiArticleContent"></div>{% endif %}
     </div>
 
     <section class="comment-section mt-5" id="comment-section">
-        <h2 class="mb-4">Community Discussion (<span id="comment-count">{{ total_comment_count }}</span>)</h2>
+        <div class="comment-toolbar">
+            <h2 class="mb-0">Community Discussion (<span id="comment-count">{{ total_comment_count }}</span>)</h2>
+            {% if comments %}
+            <div class="d-flex align-items-center gap-2">
+                <label for="commentSort" class="small text-muted mb-0">Sort</label>
+                <select class="form-select sort-select" id="commentSort" aria-label="Sort comments">
+                    <option value="newest">Newest first</option>
+                    <option value="oldest">Oldest first</option>
+                    <option value="reactions">Most reactions</option>
+                </select>
+            </div>
+            {% endif %}
+        </div>
 
         <div id="comments-list">
             {% for comment in comments %}
@@ -3122,6 +4596,193 @@ document.addEventListener('DOMContentLoaded', function () {
         const articleHashIdGlobal = {{ (article.article_hash_id if is_community_article else article.id) | tojson }};
         const isUserLoggedIn = {{ 'true' if session.user_id else 'false' }};
         const isCommunityArticle = {{ is_community_article | tojson }};
+        const articleTitleGlobal = {{ article.title | tojson }};
+        const articleSourceGlobal = {{ (article.author.name if is_community_article and article.author else (article.source.name if not is_community_article and article.source else 'BrieflyAI')) | tojson }};
+
+        /* --- Remember this article locally for the "Recently viewed" strip --- */
+        BrieflyAI.recent.add({
+            url: window.location.pathname,
+            title: articleTitleGlobal,
+            source: articleSourceGlobal
+        });
+
+        /* --- Reading progress bar --- */
+        (function () {
+            var fill = document.getElementById('readingProgressFill');
+            var wrapper = document.getElementById('articleWrapper');
+            if (!fill || !wrapper) { return; }
+            var ticking = false;
+            function update() {
+                var rect = wrapper.getBoundingClientRect();
+                var total = rect.height - window.innerHeight;
+                var pct = total <= 0 ? 100 : ((-rect.top) / total) * 100;
+                fill.style.width = Math.min(100, Math.max(0, pct)).toFixed(1) + '%';
+                ticking = false;
+            }
+            window.addEventListener('scroll', function () {
+                if (!ticking) { ticking = true; requestAnimationFrame(update); }
+            }, { passive: true });
+            window.addEventListener('resize', update, { passive: true });
+            update();
+        })();
+
+        /* --- Read time: server-rendered for community posts, computed after fetch for API ones --- */
+        BrieflyAI.setReadTime = function (text) {
+            if (!text) { return; }
+            var words = String(text).trim().split(/\\s+/).length;
+            var mins = Math.max(1, Math.ceil(words / 220));
+            var badge = document.getElementById('readTimeBadge');
+            var value = document.getElementById('readTimeValue');
+            if (badge && value) { value.textContent = mins + ' min read'; badge.hidden = false; }
+        };
+
+        /* --- Listen (Web Speech API) --- */
+        (function () {
+            var btn = document.getElementById('listenBtn');
+            if (!btn || !('speechSynthesis' in window)) { return; }
+            btn.hidden = false;
+            var speaking = false;
+            function textToRead() {
+                var parts = [];
+                var h1 = document.querySelector('.article-title-main');
+                if (h1) { parts.push(h1.textContent); }
+                var summary = document.querySelector('.summary-box p');
+                if (summary) { parts.push('Summary. ' + summary.textContent); }
+                document.querySelectorAll('.takeaways-box li').forEach(function (li, i) {
+                    if (i === 0) { parts.push('Key takeaways.'); }
+                    parts.push(li.textContent);
+                });
+                var body = document.querySelector('.content-text');
+                if (body) { parts.push(body.textContent); }
+                return parts.join('. ');
+            }
+            function setState(on) {
+                speaking = on;
+                btn.classList.toggle('is-active', on);
+                btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+                btn.querySelector('.listen-label').textContent = on ? 'Stop' : 'Listen';
+                btn.querySelector('i').className = on ? 'fas fa-stop' : 'fas fa-headphones';
+            }
+            btn.addEventListener('click', function () {
+                if (speaking) { window.speechSynthesis.cancel(); setState(false); return; }
+                var text = textToRead();
+                if (!text.trim()) { BrieflyAI.showToast('Nothing to read yet -- still loading.', 'info', 3000); return; }
+                var utter = new SpeechSynthesisUtterance(text);
+                utter.rate = 1.0;
+                utter.lang = document.documentElement.lang || 'en';
+                utter.onend = function () { setState(false); };
+                utter.onerror = function () { setState(false); };
+                window.speechSynthesis.cancel();
+                window.speechSynthesis.speak(utter);
+                setState(true);
+            });
+            // Browsers keep speaking after navigation otherwise.
+            window.addEventListener('beforeunload', function () { window.speechSynthesis.cancel(); });
+        })();
+
+        /* --- Text size preference --- */
+        (function () {
+            var btn = document.getElementById('textSizeBtn');
+            var wrapper = document.getElementById('articleWrapper');
+            var label = document.getElementById('textSizeLabel');
+            if (!btn || !wrapper) { return; }
+            var sizes = ['normal', 'large', 'xlarge'];
+            var names = { normal: 'Normal', large: 'Large', xlarge: 'X-Large' };
+            var current = 'normal';
+            try { current = localStorage.getItem('brieflyai:textSize') || 'normal'; } catch (e) {}
+            if (sizes.indexOf(current) === -1) { current = 'normal'; }
+            function apply(size) {
+                current = size;
+                wrapper.dataset.textSize = size;
+                if (label) { label.textContent = names[size]; }
+                try { localStorage.setItem('brieflyai:textSize', size); } catch (e) {}
+            }
+            apply(current);
+            btn.addEventListener('click', function () {
+                apply(sizes[(sizes.indexOf(current) + 1) % sizes.length]);
+            });
+        })();
+
+        /* --- Share --- */
+        (function () {
+            var btn = document.getElementById('shareBtn');
+            var menu = document.getElementById('shareMenu');
+            if (!btn || !menu) { return; }
+            var url = window.location.href;
+            var targets = BrieflyAI.share.targets(url, articleTitleGlobal);
+            Object.keys(targets).forEach(function (k) {
+                var link = menu.querySelector('[data-share="' + k + '"]');
+                if (link) { link.href = targets[k]; }
+            });
+
+            function closeMenu() { menu.classList.remove('show'); btn.setAttribute('aria-expanded', 'false'); }
+
+            btn.addEventListener('click', function () {
+                // Prefer the OS share sheet where it exists (mobile), menu everywhere else.
+                if (navigator.share) {
+                    BrieflyAI.share.native(url, articleTitleGlobal)
+                        .catch(function (err) {
+                            if (err && err.name === 'AbortError') { return; }
+                            menu.classList.add('show');
+                            btn.setAttribute('aria-expanded', 'true');
+                        });
+                    return;
+                }
+                var show = !menu.classList.contains('show');
+                menu.classList.toggle('show', show);
+                btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+            });
+
+            menu.querySelector('[data-share="copy"]').addEventListener('click', function () {
+                BrieflyAI.share.copy(url)
+                    .then(function () { BrieflyAI.showToast('Link copied to clipboard.', 'success', 2500); })
+                    .catch(function () { BrieflyAI.showToast('Could not copy the link.', 'danger'); });
+                closeMenu();
+            });
+            menu.querySelectorAll('a[data-share]').forEach(function (a) {
+                a.addEventListener('click', closeMenu);
+            });
+            document.addEventListener('click', function (e) {
+                if (!e.target.closest('.share-wrap')) { closeMenu(); }
+            });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && menu.classList.contains('show')) { closeMenu(); btn.focus(); }
+            });
+        })();
+
+        var printBtn = document.getElementById('printBtn');
+        if (printBtn) { printBtn.addEventListener('click', function () { window.print(); }); }
+
+        /* --- Comment sorting (client-side reorder of top-level threads) --- */
+        (function () {
+            var select = document.getElementById('commentSort');
+            var list = document.getElementById('comments-list');
+            if (!select || !list) { return; }
+            function reactionScore(thread) {
+                var total = 0;
+                thread.querySelectorAll(':scope > .comment-container .reaction-pill .count').forEach(function (c) {
+                    total += parseInt(c.textContent, 10) || 0;
+                });
+                return total;
+            }
+            select.addEventListener('change', function () {
+                var mode = select.value;
+                var threads = Array.prototype.slice.call(list.children).filter(function (el) {
+                    return el.classList.contains('comment-thread');
+                });
+                // DOM order is oldest-first as rendered by the server.
+                threads.sort(function (a, b) {
+                    if (mode === 'reactions') {
+                        var diff = reactionScore(b) - reactionScore(a);
+                        if (diff !== 0) { return diff; }
+                    }
+                    var ai = parseInt(a.id.replace('comment-', ''), 10) || 0;
+                    var bi = parseInt(b.id.replace('comment-', ''), 10) || 0;
+                    return mode === 'oldest' ? ai - bi : bi - ai;
+                });
+                threads.forEach(function (t) { list.appendChild(t); });
+            });
+        })();
 
         const adminDeleteBtn = document.getElementById('adminDeleteBtn');
         if (adminDeleteBtn) {
@@ -3137,10 +4798,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 this.disabled = true;
                 this.innerHTML = '<i class="fas fa-spinner fa-spin" aria-hidden="true"></i> Deleting...';
 
-                fetch(`/delete_community_article/${articleHashIdGlobal}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                })
+                BrieflyAI.postJSON(`/delete_community_article/${articleHashIdGlobal}`)
                 .then(res => res.json().then(data => ({ ok: res.ok, data })))
                 .then(({ ok, data }) => {
                     if (ok && data.success) {
@@ -3181,6 +4839,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     if (articleUrl) { html += `<hr class="my-4"><a href="${articleUrl}" class="btn btn-outline-primary mt-3 mb-3" target="_blank" rel="noopener noreferrer">Read Original Article at ${articleSourceName} <i class="fas fa-external-link-alt ms-1" aria-hidden="true"></i></a>`; }
                     apiArticleContent.innerHTML = html;
+                    // Read time comes from whatever text we actually received.
+                    BrieflyAI.setReadTime(data.full_text || (analysis && analysis.groq_summary) || '');
                 })
                 .catch(error => { console.error("Failed to load article content:", error); if (apiArticleContent) { apiArticleContent.innerHTML = `<div class="alert alert-danger small p-3">Failed to load article analysis. Details: ${error.message}</div>`; } })
                 .finally(() => { if (contentLoader) contentLoader.style.display = 'none'; });
@@ -3197,10 +4857,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 const originalButtonText = submitButton.innerHTML;
                 submitButton.disabled = true;
                 submitButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Posting...';
-                fetch(`{{ url_for('add_comment', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashIdGlobal), {
-                    method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ content, parent_id: parentId })
-                })
+                BrieflyAI.postJSON(
+                    `{{ url_for('add_comment', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashIdGlobal),
+                    { content, parent_id: parentId }
+                )
                 .then(res => {
                     if (res.status === 401) { throw new Error("Your session has expired. Please refresh the page and log in again."); }
                     if (!res.ok) { return res.json().then(err => { throw new Error(err.error || "An unknown server error occurred."); }); }
@@ -3274,7 +4934,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         danger: true
                     });
                     if (!confirmed) return;
-                    fetch(`/delete_comment/${commentId}`, { method: 'POST' })
+                    BrieflyAI.postJSON(`/delete_comment/${commentId}`)
                         .then(res => {
                             if (!res.ok) { return res.json().then(err => { throw new Error(err.error) }); }
                             return res.json();
@@ -3362,10 +5022,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     const commentId = reactionEmoji.dataset.commentId;
                     const emoji = reactionEmoji.dataset.emoji;
                     closeAllReactionBoxes();
-                    fetch(`/vote_comment/${commentId}`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                        body: JSON.stringify({ emoji: emoji })
-                    })
+                    BrieflyAI.postJSON(`/vote_comment/${commentId}`, { emoji: emoji })
                     .then(res => res.json())
                     .then(data => {
                         if (data.success) { updateReactionUI(commentId, data.reactions, data.user_reaction); }
@@ -3389,11 +5046,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     const newContent = form.querySelector('textarea[name="content"]').value.trim();
                     if (!newContent) return;
 
-                    fetch(`/edit_comment/${commentId}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ content: newContent })
-                    })
+                    BrieflyAI.postJSON(`/edit_comment/${commentId}`, { content: newContent })
                     .then(res => {
                         if (!res.ok) { return res.json().then(err => { throw new Error(err.error) }); }
                         return res.json();
@@ -3436,10 +5089,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 this.disabled = true;
                 this.innerHTML = '<i class="fas fa-spinner fa-spin" aria-hidden="true"></i> Reporting...';
-                fetch(`/report_article/${articleHashIdGlobal}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                })
+                BrieflyAI.postJSON(`/report_article/${articleHashIdGlobal}`)
                 .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
                 .then(({ ok, status, data }) => {
                     if (ok) {
@@ -3471,7 +5121,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 const description = this.dataset.description;
                 const publishedAt = this.dataset.publishedAt;
                 const btnRef = this;
-                fetch(`{{ url_for('toggle_bookmark', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_community_article: isCommunity, title, source_name: sourceName, image_url: imageUrl, description, published_at: publishedAt }) })
+                BrieflyAI.postJSON(
+                    `{{ url_for('toggle_bookmark', article_hash_id='PLACEHOLDER') }}`.replace('PLACEHOLDER', articleHashId),
+                    { is_community_article: isCommunity, title, source_name: sourceName, image_url: imageUrl, description, published_at: publishedAt }
+                )
                 .then(res => res.json())
                 .then(data => {
                     if (data.success) {
@@ -3509,6 +5162,7 @@ LOGIN_HTML_TEMPLATE = """
     </div>
     <div class="auth-body">
         <form method="POST" action="{{ url_for('login', next=request.args.get('next')) }}" id="loginForm">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="mb-3">
                 <label for="username" class="form-label fw-medium">Username</label>
                 <div class="input-group-icon">
@@ -3562,6 +5216,7 @@ REGISTER_HTML_TEMPLATE = """
     </div>
     <div class="auth-body">
         <form method="POST" action="{{ url_for('register') }}" id="registerForm">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
              <div class="mb-3">
                 <label for="name" class="form-label fw-medium">Full Name</label>
                 <div class="input-group-icon">
@@ -3718,6 +5373,52 @@ PROFILE_HTML_TEMPLATE = """
                     <div class="state-card-actions"><button type="button" class="btn btn-primary-modal" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="fas fa-pen-to-square me-2" aria-hidden="true"></i>Write a Post</button></div>
                 </div>
             {% endif %}
+        </div>
+    </div>
+</div>
+<section class="mt-5 pt-4 border-top" aria-labelledby="accountHeading">
+    <h2 class="section-heading h5 mb-3" id="accountHeading"><i class="fas fa-user-gear me-2" aria-hidden="true"></i>Your account &amp; data</h2>
+    <div class="row g-3">
+        <div class="col-md-6 d-flex">
+            <div class="contact-card text-start w-100">
+                <h3 class="h6 mb-2"><i class="fas fa-download me-2" aria-hidden="true"></i>Download your data</h3>
+                <p class="small text-muted mb-3">Get a JSON copy of your profile, articles, comments and bookmarks.</p>
+                <a href="{{ url_for('export_my_data') }}" class="btn btn-sm btn-outline-primary">Export my data</a>
+            </div>
+        </div>
+        <div class="col-md-6 d-flex">
+            <div class="contact-card text-start w-100">
+                <h3 class="h6 mb-2"><i class="fas fa-triangle-exclamation me-2" aria-hidden="true"></i>Delete your account</h3>
+                <p class="small text-muted mb-3">Permanently removes your account, articles, comments and bookmarks. This cannot be undone.</p>
+                <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#deleteAccountModal">Delete account</button>
+            </div>
+        </div>
+    </div>
+</section>
+
+<div class="modal fade" id="deleteAccountModal" tabindex="-1" aria-hidden="true" aria-labelledby="deleteAccountLabel">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('delete_account') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="modal-header border-0 pb-0">
+                    <h2 class="modal-title h5" id="deleteAccountLabel">Delete your account?</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>This permanently deletes your account and everything attached to it &mdash; articles, comments and bookmarks. It cannot be undone.</p>
+                    <p class="small text-muted">Consider <a href="{{ url_for('export_my_data') }}">exporting your data</a> first.</p>
+                    <label for="deleteAccountPassword" class="form-label fw-medium">Confirm your password</label>
+                    <div class="input-group-icon">
+                        <i class="fas fa-lock input-icon" aria-hidden="true"></i>
+                        <input type="password" class="form-control" id="deleteAccountPassword" name="password" required autocomplete="current-password">
+                    </div>
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-danger">Delete permanently</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>
@@ -3928,6 +5629,17 @@ ERROR_500_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}500 S
     </div>
 </div>
 {% endblock %}"""
+OFFLINE_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}Offline - BrieflyAI{% endblock %}{% block content %}
+<div class="state-card state-card-narrow animate-fade-in">
+    <div class="state-card-icon"><i class="fas fa-wifi" aria-hidden="true"></i></div>
+    <h1 class="state-card-title">You're Offline</h1>
+    <p class="state-card-text">We couldn't reach the network. Any pages you've already opened are still available, and new stories will load as soon as you're back online.</p>
+    <div class="state-card-actions">
+        <button type="button" class="btn btn-primary-modal" onclick="window.location.reload()"><i class="fas fa-rotate-right me-2" aria-hidden="true"></i>Try Again</button>
+        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary"><i class="fas fa-house me-2" aria-hidden="true"></i>Homepage</a>
+    </div>
+</div>
+{% endblock %}"""
 
 # ==============================================================================
 # --- 8. Add all templates to the template_storage dictionary ---
@@ -3945,6 +5657,7 @@ template_storage['404_TEMPLATE'] = ERROR_404_TEMPLATE
 template_storage['500_TEMPLATE'] = ERROR_500_TEMPLATE
 template_storage['_COMMENT_TEMPLATE'] = _COMMENT_TEMPLATE
 template_storage['PUBLIC_PROFILE_HTML_TEMPLATE'] = PUBLIC_PROFILE_HTML_TEMPLATE
+template_storage['OFFLINE_TEMPLATE'] = OFFLINE_TEMPLATE
 
 
 # ==============================================================================
