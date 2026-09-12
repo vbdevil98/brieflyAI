@@ -575,6 +575,25 @@ class BookmarkedArticle(db.Model):
     bookmarked_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     __table_args__ = (db.UniqueConstraint('user_id', 'article_hash_id', name='_user_article_bookmark_uc'),)
 
+class ArticleAnalysis(db.Model):
+    """
+    Durable store for AI analysis of API articles.
+
+    These previously lived only in the in-memory MASTER_ARTICLE_STORE. Render's free
+    web services spin down after ~15 minutes idle, so that cache was wiped constantly
+    and every article got re-summarised on the next visit -- which is what burns the
+    Groq request quota. Persisting here means each article is summarised once, ever.
+
+    Note this stores only the generated summary/takeaways; nothing about HOW they are
+    generated changes.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    article_hash_id = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    groq_summary = db.Column(db.Text, nullable=True)
+    groq_takeaways = db.Column(db.Text, nullable=True)  # JSON string
+    created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class ArticleStat(db.Model):
     """
     View counts, keyed by article hash so it works for both community and API
@@ -864,6 +883,23 @@ def get_daily_synthesis():
 # ==============================================================================
 @simple_cache()
 def fetch_news_from_api(target_date_str=None):
+    # RSS first: it is real-time, unlimited and carries no commercial-use restriction,
+    # whereas NewsAPI's free tier is ~24h delayed, capped at 100 requests/day and is
+    # licensed for development only. NewsAPI remains the fallback.
+    if os.environ.get('USE_RSS', 'true').lower() in ('1', 'true', 'yes'):
+        try:
+            rss_articles = fetch_news_from_rss()
+            if rss_articles:
+                if target_date_str:
+                    # Keep the same date-filtering contract the callers expect.
+                    rss_articles = [a for a in rss_articles
+                                    if (a.get('publishedAt') or '')[:10] == target_date_str]
+                if rss_articles:
+                    return rss_articles
+            app.logger.warning("RSS returned nothing usable; falling back to NewsAPI.")
+        except Exception as e:
+            app.logger.error(f"RSS ingestion failed, falling back to NewsAPI: {e}", exc_info=True)
+
     if not newsapi:
         app.logger.error("NewsAPI client not initialized. Cannot fetch news.")
         return []
@@ -1230,8 +1266,21 @@ def fetch_and_parse_article_content(article_hash_id, url):
                 "error": None 
             }
         else:
-            # If not in MASTER_ARTICLE_STORE or incomplete, generate it
-            groq_analysis_result = get_article_analysis_with_groq(article_scraper.text, article_title_for_groq)
+            # Second chance before spending quota: the durable store survives restarts,
+            # unlike the in-memory one above.
+            persisted = load_persisted_analysis(article_hash_id)
+            if persisted:
+                app.logger.info(f"Reusing persisted Groq analysis for {article_hash_id} (no API call).")
+                groq_analysis_result = persisted
+                if article_hash_id in MASTER_ARTICLE_STORE:
+                    MASTER_ARTICLE_STORE[article_hash_id]['groq_summary'] = persisted.get("groq_summary")
+                    MASTER_ARTICLE_STORE[article_hash_id]['groq_takeaways'] = persisted.get("groq_takeaways")
+            else:
+                # If not cached anywhere, generate it
+                groq_analysis_result = get_article_analysis_with_groq(article_scraper.text, article_title_for_groq)
+                # Persist so this article is never summarised twice, even across restarts.
+                if groq_analysis_result and not groq_analysis_result.get("error"):
+                    save_persisted_analysis(article_hash_id, groq_analysis_result)
             # And cache it in MASTER_ARTICLE_STORE if successfully generated
             if article_hash_id in MASTER_ARTICLE_STORE and groq_analysis_result and not groq_analysis_result.get("error"):
                 MASTER_ARTICLE_STORE[article_hash_id]['groq_summary'] = groq_analysis_result.get("groq_summary")
@@ -2477,6 +2526,229 @@ def delete_account():
     app.logger.info(f"Account deleted: {username}")
     flash("Your account and all associated data have been permanently deleted.", "info")
     return redirect(url_for('index'))
+
+
+def load_persisted_analysis(article_hash_id):
+    """Return previously generated AI analysis for an article, or None."""
+    try:
+        row = ArticleAnalysis.query.filter_by(article_hash_id=article_hash_id).first()
+        if not row or not row.groq_summary:
+            return None
+        takeaways = None
+        if row.groq_takeaways:
+            try:
+                takeaways = json.loads(row.groq_takeaways)
+            except (ValueError, TypeError):
+                takeaways = None
+        return {"groq_summary": row.groq_summary, "groq_takeaways": takeaways, "error": None}
+    except Exception as e:
+        app.logger.warning(f"Could not read persisted analysis for {article_hash_id}: {e}")
+        return None
+
+
+def save_persisted_analysis(article_hash_id, analysis):
+    """Store AI analysis so the same article is never summarised twice."""
+    if not analysis or analysis.get("error") or not analysis.get("groq_summary"):
+        return
+    try:
+        takeaways = analysis.get("groq_takeaways")
+        takeaways_json = json.dumps(takeaways) if isinstance(takeaways, list) else None
+        row = ArticleAnalysis.query.filter_by(article_hash_id=article_hash_id).first()
+        if row:
+            row.groq_summary = analysis.get("groq_summary")
+            row.groq_takeaways = takeaways_json
+        else:
+            db.session.add(ArticleAnalysis(
+                article_hash_id=article_hash_id,
+                groq_summary=analysis.get("groq_summary"),
+                groq_takeaways=takeaways_json))
+        db.session.commit()
+        app.logger.info(f"Persisted AI analysis for {article_hash_id} (saves a future API call).")
+    except Exception as e:
+        db.session.rollback()
+        app.logger.warning(f"Could not persist analysis for {article_hash_id}: {e}")
+
+
+# --- RSS ingestion -----------------------------------------------------------
+# NewsAPI's free tier delays articles ~24h and forbids commercial use. Publisher RSS
+# feeds are free, real-time, unlimited and carry no such restriction, so they are used
+# as the primary source with NewsAPI kept as a fallback.
+DEFAULT_RSS_FEEDS = [
+    "https://www.thehindu.com/news/national/feeder/default.rss",
+    "https://feeds.feedburner.com/ndtvnews-top-stories",
+    "https://indianexpress.com/section/india/feed/",
+    "https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml",
+    "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
+]
+
+
+def _rss_feed_urls():
+    configured = os.environ.get('RSS_FEEDS', '').strip()
+    if configured:
+        return [u.strip() for u in configured.split(',') if u.strip()]
+    return DEFAULT_RSS_FEEDS
+
+
+def _rss_text(element, *tag_names):
+    for tag in tag_names:
+        found = element.find(tag)
+        if found is not None and found.text:
+            return found.text.strip()
+    return None
+
+
+def _parse_rss_datetime(value):
+    if not value:
+        return datetime.now(timezone.utc)
+    for fmt in ('%a, %d %b %Y %H:%M:%S %z', '%a, %d %b %Y %H:%M:%S %Z', '%Y-%m-%dT%H:%M:%S%z'):
+        try:
+            parsed = datetime.strptime(value.strip(), fmt)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace('Z', '+00:00'))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return datetime.now(timezone.utc)
+
+
+def _extract_rss_image(item):
+    """RSS has no single image convention; try the common ones in order."""
+    for tag, attr in (('{http://search.yahoo.com/mrss/}content', 'url'),
+                      ('{http://search.yahoo.com/mrss/}thumbnail', 'url'),
+                      ('enclosure', 'url')):
+        node = item.find(tag)
+        if node is not None:
+            url = node.get(attr)
+            if url and url.startswith('http'):
+                return url
+    description = _rss_text(item, 'description') or ''
+    match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', description)
+    return match.group(1) if match else None
+
+
+@simple_cache(expiry_seconds_default=900)
+def fetch_news_from_rss(limit_per_feed=25):
+    """
+    Pull articles straight from publisher RSS feeds.
+
+    Free, real-time (no 24h delay) and not rate limited, which is why this is the
+    primary source. Parsed with the standard library, so no new dependency.
+    """
+    import xml.etree.ElementTree as ET
+
+    articles, seen_urls = [], set()
+    for feed_url in _rss_feed_urls():
+        try:
+            resp = requests.get(feed_url, timeout=int(os.environ.get('RSS_TIMEOUT_SECONDS', '10')),
+                                headers={'User-Agent': 'BrieflyAI/1.0 (+https://brieflyai.example)'})
+            resp.raise_for_status()
+            root = ET.fromstring(resp.content)
+        except Exception as e:
+            # One bad feed must never take down the homepage.
+            app.logger.warning(f"RSS feed failed ({feed_url}): {e}")
+            continue
+
+        channel_title = None
+        channel = root.find('channel')
+        if channel is not None:
+            channel_title = _rss_text(channel, 'title')
+        source_name = (channel_title or urllib.parse.urlparse(feed_url).netloc or 'RSS').strip()
+
+        items = root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry')
+        for item in items[:limit_per_feed]:
+            link = _rss_text(item, 'link', '{http://www.w3.org/2005/Atom}id')
+            title = _rss_text(item, 'title', '{http://www.w3.org/2005/Atom}title')
+            if not link or not title or link in seen_urls:
+                continue
+            raw_description = _rss_text(item, 'description', '{http://www.w3.org/2005/Atom}summary') or ''
+            # Feed descriptions often contain markup; strip it to plain text.
+            description = re.sub(r'<[^>]+>', '', raw_description).strip()
+            description = re.sub(r'\s+', ' ', description)
+            if not description:
+                description = title
+            seen_urls.add(link)
+            published_dt = _parse_rss_datetime(_rss_text(item, 'pubDate', 'published', 'updated'))
+            article_id = generate_article_id(link)
+            standardized = {
+                'id': article_id, 'title': title, 'description': description[:500],
+                'url': link, 'urlToImage': _extract_rss_image(item),
+                'publishedAt': published_dt.isoformat(),
+                'source': {'name': source_name}, 'is_community_article': False,
+                'groq_summary': None, 'groq_takeaways': None,
+            }
+            MASTER_ARTICLE_STORE[article_id] = standardized
+            articles.append(standardized)
+
+    articles.sort(key=lambda a: a.get('publishedAt', ''), reverse=True)
+    app.logger.info(f"RSS ingestion returned {len(articles)} articles from {len(_rss_feed_urls())} feeds.")
+    return articles
+
+
+def prune_old_data(article_days=None, analysis_days=None, stat_days=None):
+    """
+    Delete rows the app no longer needs, to keep a small database within its quota.
+
+    Community articles and their comments are user-generated and are NEVER deleted here;
+    only derived/cached rows are pruned.
+    """
+    article_days = article_days or int(os.environ.get('RETAIN_ANALYSIS_DAYS', '45'))
+    analysis_days = analysis_days or article_days
+    stat_days = stat_days or int(os.environ.get('RETAIN_STATS_DAYS', '90'))
+    removed = {}
+    try:
+        analysis_cutoff = datetime.now(timezone.utc) - timedelta(days=analysis_days)
+        removed['analysis'] = (ArticleAnalysis.query
+                               .filter(ArticleAnalysis.created_at < analysis_cutoff)
+                               .delete(synchronize_session=False))
+        stat_cutoff = datetime.now(timezone.utc) - timedelta(days=stat_days)
+        removed['stats'] = (ArticleStat.query
+                            .filter(ArticleStat.last_viewed_at < stat_cutoff)
+                            .delete(synchronize_session=False))
+        # Bookmarks pointing at API articles that aged out are already shown as
+        # "stale" in the UI; they are tiny, so they are kept deliberately.
+        db.session.commit()
+        app.logger.info(f"Pruned old rows: {removed}")
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Pruning failed: {e}", exc_info=True)
+        removed['error'] = str(e)
+    return removed
+
+
+@app.route('/admin/maintenance', methods=['POST'])
+@login_required
+@rate_limit(6, 3600, scope='maintenance')
+def run_maintenance():
+    """Manual prune, so a small database can be kept under quota without shell access."""
+    if not session.get('is_admin') or session.get('username') != ADMIN_USERNAME:
+        abort(403)
+    result = prune_old_data()
+    return jsonify({"success": 'error' not in result, "removed": result})
+
+
+@app.route('/admin/storage')
+@login_required
+def storage_report():
+    """Row counts per table, so you can see what is actually consuming the quota."""
+    if not session.get('is_admin') or session.get('username') != ADMIN_USERNAME:
+        abort(403)
+    try:
+        report = {
+            "community_articles": CommunityArticle.query.count(),
+            "comments": Comment.query.count(),
+            "users": User.query.count(),
+            "bookmarks": BookmarkedArticle.query.count(),
+            "ai_analysis_rows": ArticleAnalysis.query.count(),
+            "article_stats": ArticleStat.query.count(),
+            "subscribers": Subscriber.query.count(),
+            "reports": ReportedArticle.query.count(),
+        }
+        return jsonify({"success": True, "counts": report})
+    except Exception as e:
+        app.logger.error(f"Storage report failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": "Could not build the report."}), 500
 
 
 @app.route('/healthz')
