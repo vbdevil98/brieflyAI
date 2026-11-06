@@ -1930,7 +1930,7 @@ def get_article_content_json(article_hash_id):
         return jsonify({"status": "ready", "groq_analysis": analysis, "error": None})
     if status == 'busy':
         queue_summary(article_hash_id)
-        return jsonify({"status": "pending", "retry_after": 12, "groq_analysis": None, "error": None})
+        return jsonify({"status": "pending", "retry_after": 5, "groq_analysis": None, "error": None})
     return jsonify({"status": "unavailable", "groq_analysis": None, "error": None})
 
 
@@ -2545,6 +2545,9 @@ _LANDING_SOURCE_LABELS = (
     ('indianexpress', 'The Indian Express'),
     ('hindustantimes', 'Hindustan Times'),
     ('timesofindia', 'The Times of India'),
+    ('indiatoday', 'India Today'),
+    ('economictimes', 'The Economic Times'),
+    ('livemint', 'Mint'),
 )
 _NUMBER_WORDS = ('', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten')
 LANDING_TAGLINE = ("You don't need every word of every story. "
@@ -2643,9 +2646,10 @@ def _landing_faqs(sources_sentence):
          "a": "Yes. Every story, summary and takeaway on BrieflyAI is free to read, and you don't need an account or a card."},
         {"q": "Do I need an account?",
          "a": "Not to read. A free account needs only a name, a username and a password, with no email address. "
-              "It lets you bookmark stories, react and reply in the comments, and post articles to the Community Hub."},
+              + ("You can also sign in with Google instead. " if GOOGLE_CLIENT_ID else "")
+              + "It lets you bookmark stories, react and reply in the comments, and post articles to the Community Hub."},
         {"q": "Where does the news come from?",
-         "a": feed_line + "The popular stories and yesterday's headlines sections can include other outlets too. "
+         "a": feed_line + "Search results and yesterday's headlines can occasionally include other outlets too. "
               "Community Hub posts are written by registered readers and are marked as community posts."},
         {"q": "Who writes the summaries?",
          "a": "A large language model writes them from the text of each article. It is told to stay neutral, "
@@ -2860,6 +2864,8 @@ def sitemap():
         add(url_for(endpoint, _external=True), 'monthly', '0.4')
     for category in app.config['CATEGORIES']:
         add(url_for('index', category_name=category, page=1, _external=True), 'hourly', '0.8')
+    for slug, _label in NEWS_TOPICS:
+        add(url_for('topic_news', slug=slug, _external=True), 'hourly', '0.7')
 
     try:
         for art in (CommunityArticle.query
@@ -3047,7 +3053,7 @@ def service_worker():
     scope covers the whole site.
     """
     sw = """
-const VERSION = 'brieflyai-v3';
+const VERSION = 'brieflyai-v4';
 // Only these hosts are cached. Ads, ad measurement and news images always go to the network.
 const CACHEABLE_HOSTS = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 const OFFLINE_URL = '/offline';
@@ -7182,9 +7188,9 @@ document.addEventListener('DOMContentLoaded', function () {
                         if (data.status === 'ready' && data.groq_analysis && data.groq_analysis.groq_summary) {
                             showAnalysis(data.groq_analysis);
                             settle(null);
-                        } else if (data.status === 'pending' && attempts < 10) {
-                            if (attempts === 3 && aiStatusText) { aiStatusText.textContent = 'Many readers are here right now. Your summary is in the queue…'; }
-                            setTimeout(load, Math.min(30, data.retry_after || 12) * 1000);
+                        } else if (data.status === 'pending' && attempts < 16) {
+                            if (attempts === 4 && aiStatusText) { aiStatusText.textContent = 'Many readers are here right now. Your summary is in the queue…'; }
+                            setTimeout(load, (attempts < 4 ? Math.min(30, data.retry_after || 5) : 15) * 1000);
                         } else if (data.status === 'pending') {
                             settle('The AI summary is taking longer than usual. Please check back in a few minutes.');
                         } else {
@@ -9182,7 +9188,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                     <div class="tile b-c" data-reveal>
                         <div class="tile-text">
                             <h3 class="title-1">Major newsrooms, one feed</h3>
-                            <p class="body-3">Stories land in one place, alongside the week's popular stories and yesterday's headlines.</p>
+                            <p class="body-3">Stories land in one place, newest first and sorted by topic, alongside what other readers are opening.</p>
                         </div>
                         <ul class="ui source-stack body-5">
                             {% for name in sources %}<li><span>{{ name }}</span><svg class="icon icon-sm accent" aria-hidden="true"><use href="#ph-check-circle"></use></svg></li>{% endfor %}
