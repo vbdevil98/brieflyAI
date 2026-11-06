@@ -17,4 +17,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping the website to keep it alive
-        run: curl --fail -s "https://brieflyai.in/" > /dev/null
+        run: curl --fail -s "https://brieflyai.in/news" > /dev/null

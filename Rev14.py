@@ -1413,8 +1413,8 @@ def report_article(article_hash_id):
         app.logger.error(f"Error reporting article {article.id}: {e}", exc_info=True)
         return jsonify({"success": False, "error": "A database error occurred."}), 500
 
-@app.route('/')
-@app.route('/page/<int:page>')
+@app.route('/news')
+@app.route('/news/page/<int:page>')
 @app.route('/category/<category_name>')
 @app.route('/category/<category_name>/page/<int:page>')
 def index(page=1, category_name='All Articles'):
@@ -2179,6 +2179,18 @@ def admin_review_testimonial(testimonial_id, action):
     return redirect(url_for('admin_testimonials'))
 
 
+@app.route('/welcome')
+def landing_old_address():
+    """The landing page used to live here; keep old links working."""
+    return redirect(url_for('landing'), code=301)
+
+
+@app.route('/page/<int:page>')
+def index_old_pagination(page):
+    """The feed moved from / to /news; keep old paginated links working."""
+    return redirect(url_for('index', page=page), code=301)
+
+
 def _landing_testimonials(limit=6):
     """Approved testimonials for the landing page, newest approval first."""
     try:
@@ -2217,7 +2229,7 @@ LANDING_TAGLINE = ("You don't need every word of every story. "
                    "You need what happened, in plain words, and a link to the rest.")
 # A small weekly count reads as a weakness rather than proof, so it stays hidden below this.
 LANDING_STAT_MIN = int(os.environ.get('LANDING_STAT_MIN', '20'))
-LANDING_OG_IMAGE = 'og-welcome.png'
+LANDING_OG_IMAGE = 'og-welcome.jpg'
 
 
 def _join_names(names):
@@ -2329,9 +2341,9 @@ def _landing_faqs(sources_sentence):
     ]
 
 
-@app.route('/welcome')
+@app.route('/')
 def landing():
-    """Landing page for new visitors. The news feed itself stays at '/'."""
+    """Homepage: the landing page. The news feed lives at /news."""
     sources = _landing_source_names()
     sources_sentence = _join_names(sources)
     faqs = _landing_faqs(sources_sentence)
@@ -2528,8 +2540,8 @@ def sitemap():
         entry += f"<changefreq>{changefreq}</changefreq><priority>{priority}</priority></url>"
         urls.append(entry)
 
-    add(url_for('index', _external=True), 'hourly', '1.0')
-    add(url_for('landing', _external=True), 'weekly', '0.6')
+    add(url_for('landing', _external=True), 'weekly', '1.0')
+    add(url_for('index', _external=True), 'hourly', '0.9')
     for endpoint in ('about', 'contact', 'privacy', 'terms'):
         add(url_for(endpoint, _external=True), 'monthly', '0.4')
     for category in app.config['CATEGORIES']:
@@ -2619,7 +2631,7 @@ def web_manifest():
         "name": "BrieflyAI",
         "short_name": "BrieflyAI",
         "description": "AI-summarized, India-centric news.",
-        "start_url": "/",
+        "start_url": "/news",
         "scope": "/",
         "display": "standalone",
         "background_color": "#F6F5F2",
@@ -4050,8 +4062,8 @@ BASE_HTML_TEMPLATE = """
                 <div class="footer-section col-lg-2 col-md-6 mb-4">
                     <h5>Quick Links</h5>
                     <div class="footer-links">
-                        <a href="{{ url_for('index') }}">Home</a>
-                        <a href="{{ url_for('landing') }}">How BrieflyAI works</a>
+                        <a href="{{ url_for('landing') }}">Home</a>
+                        <a href="{{ url_for('index') }}">Today's news</a>
                         <a href="{{ url_for('about') }}">About Us</a>
                         <a href="{{ url_for('contact') }}">Contact</a>
                         <a href="{{ url_for('privacy') }}">Privacy Policy</a>
@@ -6541,12 +6553,15 @@ document.addEventListener('DOMContentLoaded', function () {
 # .md\:heading-2 reach the browser untouched.
 LANDING_HTML_TEMPLATE = r"""<!doctype html>
 {#
-  BrieflyAI landing page (/welcome).
+  BrieflyAI landing page, served at "/". The news feed lives at /news.
 
   Standalone on purpose: it follows the landing page design system (one typeface: Geist,
   Phosphor icons, fixed spacing and type scales) instead of the Bootstrap based site shell.
   Text styles are defined once below as heading-*, title-*, body-*, button-*, caption-*
   and applied by name. Responsive variants use the md: (768px) and lg: (1024px) prefixes.
+
+  Artwork: hand coloured Photochrom prints of India, c. 1890, from the Library of Congress
+  Prints and Photographs Division (Photochrom Print Collection, no known restrictions).
 #}
 <html lang="en" data-theme="{{ theme }}">
 <head>
@@ -6555,8 +6570,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     <title>BrieflyAI: India's news, one minute per story</title>
     <meta name="description" content="Short AI summaries and key takeaways for India's top stories from {{ sources_short }} and more. Free to read, no account needed.">
     <link rel="canonical" href="{{ canonical_url }}">
-    <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#F7F5EF" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#131209" media="(prefers-color-scheme: dark)">
     <link rel="manifest" href="{{ url_for('web_manifest') }}">
     <link rel="icon" href="{{ url_for('app_icon', size=192) }}" type="image/svg+xml">
 
@@ -6576,8 +6591,13 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     <meta name="twitter:title" content="BrieflyAI: India's news, one minute per story">
     <meta name="twitter:description" content="Short AI summaries and key takeaways for India's top stories. Free to read, no account needed.">
 
+    <script>document.documentElement.classList.add('js');</script>
     <script type="application/ld+json">{{ faq_schema|tojson }}</script>
 
+    <link rel="preload" as="image" type="image/webp" fetchpriority="high"
+          href="{{ url_for('static', filename='landing/hero-nirmahal-ghat-2400.webp') }}"
+          imagesrcset="{{ url_for('static', filename='landing/hero-nirmahal-ghat-mobile-900.webp') }} 900w, {{ url_for('static', filename='landing/hero-nirmahal-ghat-1200.webp') }} 1200w, {{ url_for('static', filename='landing/hero-nirmahal-ghat-2400.webp') }} 2400w"
+          imagesizes="100vw">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap">
@@ -6603,85 +6623,95 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             --duration-color: 300ms;
 
             --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+            --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0 0.04 0 0 0 0.9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 
-            /* Light theme */
+            /* Light theme: warm paper that matches the prints. */
             color-scheme: light;
-            --bg: #FFFFFF;
-            --surface: #F6F6F4;
-            --surface-raised: #FFFFFF;
-            --surface-muted: #EDEDEA;
-            --tile-bg: #FFFFFF;
-            --border: #E4E4E0;
-            --border-strong: #0A0A0A;
-            --text: #0A0A0A;
-            --text-muted: #55555A;
-            --text-subtle: #76767C;
-            --accent: #0F766E;
-            --btn-bg: #0A0A0A;
-            --btn-text: #FFFFFF;
-            --btn-hover: #2C2C2E;
-            --btn-ghost-hover: #EDEDEA;
-            --nav-bg: rgba(255, 255, 255, 0.72);
-            --panel-bg: rgba(255, 255, 255, 0.94);
+            --bg: #F7F5EF;
+            --surface: #EFECE4;
+            --surface-raised: #FBFAF6;
+            --surface-muted: #E6E2D8;
+            --border: #DEDACF;
+            --border-strong: #16140F;
+            --text: #16140F;
+            --text-muted: #5A564C;
+            --text-subtle: #777266;
+            --accent: #12645E;
+            --btn-bg: #16140F;
+            --btn-text: #F7F5EF;
+            --btn-hover: #2E2B23;
+            --btn-ghost-hover: #E6E2D8;
+            --nav-bg: rgba(247, 245, 239, 0.72);
+            --panel-bg: rgba(247, 245, 239, 0.94);
             --hero-from: #000000;
             --hero-to: #666666;
-            --card-shadow: 0 24px 48px -24px rgba(10, 10, 10, 0.18);
+            --card-shadow: 0 32px 64px -32px rgba(56, 44, 20, 0.35);
+            --photo-filter: none;
+            --photo-veil: rgba(247, 245, 239, 0);
+            --on-photo: #16140F;
+            --on-photo-muted: #3B372E;
         }
         :root[data-theme="dark"] {
             color-scheme: dark;
-            --bg: #000000;
+            --bg: #131209;
             --surface: #181818;
-            --surface-raised: #181818;
-            --surface-muted: #1F1F1F;
-            --tile-bg: #272727;
-            --border: #272727;
-            --border-strong: #F5F5F5;
-            --text: #F5F5F5;
-            --text-muted: #A3A3A8;
-            --text-subtle: #8A8A90;
-            --accent: #2DD4BF;
-            --btn-bg: #F5F5F5;
-            --btn-text: #000000;
-            --btn-hover: #D9D9D9;
-            --btn-ghost-hover: #1F1F1F;
-            --nav-bg: rgba(24, 24, 24, 0.72);
-            --panel-bg: rgba(0, 0, 0, 0.92);
+            --surface-raised: #1F1F1F;
+            --surface-muted: #272727;
+            --border: #313131;
+            --border-strong: #F2EFE6;
+            --text: #F2EFE6;
+            --text-muted: #ABA697;
+            --text-subtle: #8C887B;
+            --accent: #6CC9BD;
+            --btn-bg: #F2EFE6;
+            --btn-text: #131209;
+            --btn-hover: #DAD6CB;
+            --btn-ghost-hover: #272727;
+            --nav-bg: rgba(19, 18, 9, 0.66);
+            --panel-bg: rgba(19, 18, 9, 0.92);
             --hero-from: #FFFFFF;
             --hero-to: #9B9B9B;
             --card-shadow: none;
+            --photo-filter: brightness(0.5) saturate(0.85);
+            --photo-veil: rgba(19, 18, 9, 0.2);
+            --on-photo: #F2EFE6;
+            --on-photo-muted: #D9D4C6;
         }
         @media (prefers-color-scheme: dark) {
             :root[data-theme="auto"] {
                 color-scheme: dark;
-                --bg: #000000;
+                --bg: #131209;
                 --surface: #181818;
-                --surface-raised: #181818;
-                --surface-muted: #1F1F1F;
-                --tile-bg: #272727;
-                --border: #272727;
-                --border-strong: #F5F5F5;
-                --text: #F5F5F5;
-                --text-muted: #A3A3A8;
-                --text-subtle: #8A8A90;
-                --accent: #2DD4BF;
-                --btn-bg: #F5F5F5;
-                --btn-text: #000000;
-                --btn-hover: #D9D9D9;
-                --btn-ghost-hover: #1F1F1F;
-                --nav-bg: rgba(24, 24, 24, 0.72);
-                --panel-bg: rgba(0, 0, 0, 0.92);
+                --surface-raised: #1F1F1F;
+                --surface-muted: #272727;
+                --border: #313131;
+                --border-strong: #F2EFE6;
+                --text: #F2EFE6;
+                --text-muted: #ABA697;
+                --text-subtle: #8C887B;
+                --accent: #6CC9BD;
+                --btn-bg: #F2EFE6;
+                --btn-text: #131209;
+                --btn-hover: #DAD6CB;
+                --btn-ghost-hover: #272727;
+                --nav-bg: rgba(19, 18, 9, 0.66);
+                --panel-bg: rgba(19, 18, 9, 0.92);
                 --hero-from: #FFFFFF;
                 --hero-to: #9B9B9B;
                 --card-shadow: none;
+                --photo-filter: brightness(0.5) saturate(0.85);
+                --photo-veil: rgba(19, 18, 9, 0.2);
+                --on-photo: #F2EFE6;
+                --on-photo-muted: #D9D4C6;
             }
         }
 
         /* ==========================================================================
            TEXT STYLES (Tailwind type scale only)
            ========================================================================== */
-        .heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
-        .heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
-        .heading-3 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.02em; }
+        .heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; letter-spacing: -0.03em; }
+        .heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.03em; }
+        .heading-3 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.025em; }
         .heading-4 { font-size: 1.875rem; line-height: 2.25rem; font-weight: 600; letter-spacing: -0.02em; }
         .heading-5 { font-size: 1.5rem; line-height: 2rem; font-weight: 600; letter-spacing: -0.015em; }
         .heading-6 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 600; }
@@ -6703,17 +6733,17 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         .button-xsm { font-size: 0.75rem; line-height: 1rem; font-weight: 600; }
         .caption-1 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; }
         .caption-2 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 400; }
-        .caption-3 { font-size: 0.75rem; line-height: 1rem; font-weight: 600; }
+        .caption-3 { font-size: 0.75rem; line-height: 1rem; font-weight: 600; letter-spacing: 0.04em; }
         .caption-4 { font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
         .caption-5 { font-size: 0.75rem; line-height: 1rem; font-weight: 400; }
         @media (min-width: 768px) {
-            .md\:heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
-            .md\:heading-3 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.02em; }
+            .md\:heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.03em; }
+            .md\:heading-3 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.025em; }
             .md\:body-7 { font-size: 1.125rem; line-height: 1.75rem; font-weight: 400; }
         }
         @media (min-width: 1024px) {
-            .lg\:heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
-            .lg\:heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
+            .lg\:heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; letter-spacing: -0.03em; }
+            .lg\:heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.03em; }
         }
 
         /* ==========================================================================
@@ -6732,35 +6762,50 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             -moz-osx-font-smoothing: grayscale;
             overflow-x: clip;
         }
-        h1, h2, h3, h4, h5, h6, p, ul, ol, figure, dl, dd { margin: 0; }
+        h1, h2, h3, h4, h5, h6, p, ul, ol, figure, dl, dd, blockquote { margin: 0; }
         ul, ol { padding: 0; list-style: none; }
         a { color: inherit; text-decoration: none; }
+        img { display: block; max-width: 100%; }
         button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
         h1, h2, h3, h4, h5, h6, [class*="heading-"], [class*="title-"] { text-wrap: balance; }
-        p, li, dd, summary { text-wrap: pretty; }
-        em, i { font-style: normal; }
+        p, li, dd, dt, figcaption { text-wrap: pretty; }
+        em, i, cite, blockquote { font-style: normal; }
         ::selection { background: var(--text); color: var(--bg); }
-
         :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--rounded-md); }
 
         .icon { width: 20px; height: 20px; flex: none; fill: currentColor; }
         .icon-sm { width: 16px; height: 16px; }
         .icon-lg { width: 24px; height: 24px; }
 
-        .container { width: 100%; max-width: 1152px; margin-inline: auto; padding-inline: var(--spacing-300); }
+        .container { width: 100%; max-width: 1232px; margin-inline: auto; padding-inline: var(--spacing-300); }
         @media (min-width: 768px) { .container { padding-inline: var(--spacing-400); } }
+        @media (min-width: 1280px) { .container { padding-inline: var(--spacing-500); } }
 
         .skip-link {
-            position: absolute; left: var(--spacing-200); top: var(--spacing-200); z-index: 100;
+            position: absolute; left: var(--spacing-200); top: var(--spacing-200); z-index: 60;
             padding: var(--spacing-75) var(--spacing-100); border-radius: var(--rounded-lg);
-            background: var(--btn-bg); color: var(--btn-text);
-            transform: translateY(-200%);
+            background: var(--btn-bg); color: var(--btn-text); transform: translateY(-200%);
         }
         .skip-link:focus { transform: none; }
 
         .muted { color: var(--text-muted); }
         .subtle { color: var(--text-subtle); }
         .accent { color: var(--accent); }
+        .eyebrow { display: inline-flex; align-items: center; gap: var(--spacing-75); color: var(--accent); }
+        .eyebrow::before { content: ""; width: 24px; height: 1px; background: currentColor; }
+
+        /* Photographs: one treatment everywhere (theme filter, flat veil, film grain). */
+        .photo { position: relative; overflow: hidden; isolation: isolate; background: var(--surface-muted); }
+        .photo img { width: 100%; height: 100%; object-fit: cover; filter: var(--photo-filter); }
+        .photo::before { content: ""; position: absolute; inset: 0; z-index: 1; background: var(--photo-veil); pointer-events: none; }
+        .photo::after { content: ""; position: absolute; inset: 0; z-index: 1; background-image: var(--grain); opacity: 0.14; mix-blend-mode: multiply; pointer-events: none; }
+        .credit { color: var(--text-subtle); }
+        .credit-on-photo {
+            position: absolute; z-index: 2; display: inline-flex; align-items: center; gap: var(--spacing-50);
+            padding: var(--spacing-50) var(--spacing-75); border-radius: var(--rounded-md);
+            background: var(--nav-bg); color: var(--text-muted);
+            -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+        }
 
         /* ==========================================================================
            BUTTONS
@@ -6768,20 +6813,16 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         .btn {
             display: inline-flex; align-items: center; justify-content: center; gap: var(--spacing-75);
             padding: var(--spacing-75) var(--spacing-100);
-            border-radius: var(--rounded-lg);
-            border: 1px solid transparent;
-            white-space: nowrap;
-            transition: background-color var(--duration-color) var(--ease),
-                        color var(--duration-color) var(--ease),
-                        border-color var(--duration-color) var(--ease),
-                        transform var(--duration-layout) var(--ease);
+            border-radius: var(--rounded-lg); border: 1px solid transparent; white-space: nowrap;
+            transition: background-color var(--duration-color) var(--ease), color var(--duration-color) var(--ease),
+                        border-color var(--duration-color) var(--ease), transform var(--duration-layout) var(--ease);
         }
         .btn .icon { transition: transform var(--duration-layout) var(--ease); }
         .btn:active { transform: scale(0.98); }
         .btn-primary { background: var(--btn-bg); color: var(--btn-text); }
         .btn-primary:hover { background: var(--btn-hover); }
         .btn-primary:hover .icon-arrow { transform: translateX(var(--spacing-25)); }
-        .btn-ghost { color: var(--text); border-color: var(--border); background: var(--bg); }
+        .btn-ghost { color: var(--text); border-color: var(--border); background: var(--surface-raised); }
         .btn-ghost:hover { background: var(--btn-ghost-hover); }
 
         .text-link {
@@ -6798,30 +6839,23 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
            NAVIGATION
            ========================================================================== */
         .site-nav {
-            position: fixed; top: var(--spacing-200); left: 50%; z-index: 50;
-            transform: translateX(-50%);
+            position: fixed; top: var(--spacing-200); left: 50%; z-index: 50; transform: translateX(-50%);
             display: flex; align-items: center; gap: var(--spacing-75);
             width: max-content; max-width: calc(100% - var(--spacing-400));
-            padding: var(--spacing-75);
-            border-radius: var(--rounded-2xl);
-            border: 1px solid var(--border);
-            background: var(--nav-bg);
-            -webkit-backdrop-filter: blur(16px) saturate(140%);
-            backdrop-filter: blur(16px) saturate(140%);
+            padding: var(--spacing-75); border-radius: var(--rounded-2xl);
+            border: 1px solid var(--border); background: var(--nav-bg);
+            -webkit-backdrop-filter: blur(16px) saturate(140%); backdrop-filter: blur(16px) saturate(140%);
         }
         .nav-brand {
             display: inline-flex; align-items: center; gap: var(--spacing-75);
-            padding: var(--spacing-75) var(--spacing-100);
-            border-radius: var(--rounded-lg); /* nav radius 16 minus 8 gap */
+            padding: var(--spacing-75) var(--spacing-100); border-radius: var(--rounded-lg); /* 16 minus 8 */
             transition: background-color var(--duration-color) var(--ease);
         }
         .nav-brand:hover { background: var(--btn-ghost-hover); }
         .nav-brand .icon { color: var(--accent); }
         .nav-links { display: none; align-items: center; gap: var(--spacing-25); }
         .nav-links a {
-            display: block; padding: var(--spacing-75) var(--spacing-100);
-            border-radius: var(--rounded-lg);
-            color: var(--text-muted);
+            display: block; padding: var(--spacing-75) var(--spacing-100); border-radius: var(--rounded-lg); color: var(--text-muted);
             transition: background-color var(--duration-color) var(--ease), color var(--duration-color) var(--ease);
         }
         .nav-links a:hover { color: var(--text); background: var(--btn-ghost-hover); }
@@ -6835,14 +6869,13 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         .nav-toggle:hover { background: var(--btn-ghost-hover); }
         .nav-toggle-line {
             position: absolute; left: 12px; right: 12px; height: 1.5px; border-radius: var(--rounded-full);
-            background: currentColor;
-            transition: transform var(--duration-layout) var(--ease);
+            background: currentColor; transition: transform var(--duration-layout) var(--ease);
         }
         .nav-toggle-line:first-child { transform: translateY(-4px); }
         .nav-toggle-line:last-child { transform: translateY(4px); }
         .nav-toggle[aria-expanded="true"] .nav-toggle-line:first-child { transform: rotate(45deg); }
         .nav-toggle[aria-expanded="true"] .nav-toggle-line:last-child { transform: rotate(-45deg); }
-        @media (min-width: 768px) {
+        @media (min-width: 900px) {
             .nav-links { display: flex; }
             .nav-cta { display: inline-flex; }
             .nav-toggle { display: none; }
@@ -6852,87 +6885,86 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             position: fixed; inset: 0; z-index: 40;
             display: flex; flex-direction: column; justify-content: space-between; gap: var(--spacing-400);
             padding: var(--spacing-900) var(--spacing-300) var(--spacing-400);
-            background: var(--panel-bg);
-            -webkit-backdrop-filter: blur(24px);
-            backdrop-filter: blur(24px);
-            opacity: 0;
-            transition: opacity var(--duration-color) var(--ease);
-            overflow-y: auto;
+            background: var(--panel-bg); -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
+            opacity: 0; transition: opacity var(--duration-color) var(--ease); overflow-y: auto;
         }
         .mobile-menu[hidden] { display: none; }
         .mobile-menu.is-open { opacity: 1; }
         .mobile-menu-list { display: flex; flex-direction: column; gap: var(--spacing-75); }
         .mobile-menu-list a { display: block; padding: var(--spacing-75) 0; }
-        .menu-item {
-            opacity: 0; transform: translateY(var(--spacing-300));
-            transition: opacity var(--duration-layout) var(--ease), transform var(--duration-layout) var(--ease);
-        }
+        .menu-item { opacity: 0; transform: translateY(var(--spacing-300)); transition: opacity var(--duration-layout) var(--ease), transform var(--duration-layout) var(--ease); }
         .mobile-menu.is-open .menu-item { opacity: 1; transform: none; }
         .mobile-menu .btn { width: 100%; }
         html.menu-open { overflow: hidden; }
 
         /* ==========================================================================
-           SECTIONS
+           HERO: a full bleed print, headline on the sky, a real summary overlapping the edge
            ========================================================================== */
-        .section { padding-block: var(--spacing-700); }
-        @media (min-width: 768px) { .section { padding-block: var(--spacing-900); } }
-        .section-head { max-width: 680px; margin-bottom: var(--spacing-600); }
-        .section-head.is-centered { margin-inline: auto; text-align: center; }
-        .section-head > * + * { margin-top: var(--spacing-200); }
-        .eyebrow { color: var(--accent); }
-
-        /* --- Hero --- */
-        .hero { padding-top: var(--spacing-900); padding-bottom: var(--spacing-700); text-align: center; }
-        @media (min-width: 768px) {
-            .hero { padding-bottom: var(--spacing-900); }
-            .hero-inner { padding-top: var(--spacing-700); }
-        }
+        .hero { position: relative; isolation: isolate; min-height: max(640px, min(100svh, 960px)); color: var(--on-photo); }
+        .hero-media { position: absolute; inset: 0; z-index: -1; }
+        .hero-media img { object-position: 50% 0%; transform: scale(1.04); transition: transform 1400ms var(--ease); }
+        .is-loaded .hero-media img { transform: none; }
+        .hero-content { position: relative; padding-top: var(--spacing-900); padding-bottom: var(--spacing-900); }
+        @media (min-width: 768px) { .hero-copy { padding-top: var(--spacing-600); } }
+        .hero-copy { max-width: 680px; }
+        .js .hero-copy > * { opacity: 0; transform: translateY(var(--spacing-200)); transition: opacity 700ms var(--ease), transform 700ms var(--ease); }
+        .is-loaded .hero-copy > * { opacity: 1; transform: none; }
+        .is-loaded .hero-copy > :nth-child(2) { transition-delay: 80ms; }
+        .is-loaded .hero-copy > :nth-child(3) { transition-delay: 160ms; }
+        .is-loaded .hero-copy > :nth-child(4) { transition-delay: 240ms; }
+        .is-loaded .hero-copy > :nth-child(5) { transition-delay: 320ms; }
         .hero-badge {
             display: inline-flex; align-items: center; gap: var(--spacing-75);
-            padding: var(--spacing-50) var(--spacing-100);
-            border-radius: var(--rounded-full);
-            border: 1px solid var(--border);
-            background: var(--surface);
-            color: var(--text-muted);
+            padding: var(--spacing-50) var(--spacing-100); border-radius: var(--rounded-full);
+            background: var(--nav-bg); color: var(--text);
+            -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
         }
         .live-dot { width: 8px; height: 8px; border-radius: var(--rounded-full); background: var(--accent); animation: pulse 2400ms var(--ease) infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-        .hero-title { max-width: 680px; width: fit-content; margin: var(--spacing-300) auto 0; color: var(--text); }
-        /* Inline + cloned decoration so every line gets the full left to right gradient. */
+        .hero-title { margin-top: var(--spacing-300); }
         .hero-title-text {
             background: linear-gradient(90deg, var(--hero-from), var(--hero-to));
             -webkit-box-decoration-break: clone; box-decoration-break: clone;
-            -webkit-background-clip: text; background-clip: text;
-            -webkit-text-fill-color: transparent; color: transparent;
+            -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
         }
-        .hero-sub { max-width: 680px; margin: var(--spacing-300) auto 0; color: var(--text-muted); }
-        .hero-actions { margin-top: var(--spacing-400); display: flex; flex-direction: column; align-items: center; gap: var(--spacing-100); }
-        .hero-proof { margin-top: var(--spacing-600); display: flex; flex-direction: column; align-items: center; gap: var(--spacing-100); }
-        .source-row { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--spacing-75) var(--spacing-300); color: var(--text-muted); }
+        .hero-sub { margin-top: var(--spacing-300); max-width: 560px; color: var(--on-photo-muted); }
+        .hero-actions { margin-top: var(--spacing-400); display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-100) var(--spacing-300); }
+        /* Frosted backing wherever small text could cross the bridge or the boats. */
+        .frost { background: var(--nav-bg); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+        .hero-note { padding: var(--spacing-50) var(--spacing-75); border-radius: var(--rounded-md); color: var(--text-muted); }
+        .hero-proof { display: inline-block; margin-top: var(--spacing-400); padding: var(--spacing-100) var(--spacing-200); border-radius: var(--rounded-xl); color: var(--text-muted); }
+        .hero-proof-short { display: none; }
+        @media (max-width: 767px) { .hero-proof-short { display: block; color: var(--text); } }
+        .hero-sources { margin-top: var(--spacing-75); display: flex; flex-wrap: wrap; gap: var(--spacing-75) var(--spacing-200); color: var(--text); }
+        .hero-credit { left: var(--spacing-300); bottom: calc(var(--spacing-900) + var(--spacing-200)); }
+        @media (min-width: 768px) { .hero-credit { left: var(--spacing-400); bottom: var(--spacing-300); } }
+        /* Small screens: the text crosses the river, so it sits on a frosted panel. */
+        @media (max-width: 767px) {
+            .hero-copy { padding: var(--spacing-300); border-radius: var(--rounded-2xl); background: var(--nav-bg); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+            .hero-copy .frost { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; padding-inline: 0; }
+            .hero-proof { margin-top: var(--spacing-200); padding-block: 0; }
+            .hero-proof:has(.hero-proof-short) .hero-proof-label, .hero-proof:has(.hero-proof-short) .hero-sources { display: none; }
+        }
 
-        /* --- Story card (hero visual) --- */
-        .story-stack { position: relative; max-width: 560px; margin: var(--spacing-600) auto 0; padding-top: var(--spacing-300); }
-        @media (min-width: 768px) { .story-stack { margin-top: var(--spacing-700); } }
-        .story-ghost {
-            position: absolute; left: 0; right: 0; height: 96px;
-            border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface);
-            transform-origin: top center;
+        /* Story card: real product UI that overlaps the photograph. */
+        .hero-card-wrap { position: relative; z-index: 3; margin-top: calc(var(--spacing-900) * -1); }
+        .hero-card-wrap .story-card { max-width: 480px; margin-left: auto; }
+        .js .hero-card-wrap .story-card { opacity: 0; transition: opacity 800ms var(--ease) 400ms; }
+        .is-loaded .hero-card-wrap .story-card { opacity: 1; }
+        /* Wide screens: the card hangs off the bottom right corner of the photograph. */
+        @media (min-width: 1280px) {
+            .hero-card-wrap { height: 0; margin-top: 0; }
+            .hero-card-wrap .story-card { max-width: 440px; transform: translateY(calc(-100% + var(--spacing-900))); }
         }
-        .story-ghost-back { top: 0; transform: scale(0.9); }
-        .story-ghost-mid { top: var(--spacing-100); transform: scale(0.95); }
         .story-card {
-            position: relative; text-align: left;
-            padding: var(--spacing-300);
-            border-radius: var(--rounded-2xl);
-            border: 1px solid var(--border);
-            background: var(--surface-raised);
-            box-shadow: var(--card-shadow);
+            position: relative; text-align: left; padding: var(--spacing-300);
+            border-radius: var(--rounded-2xl); border: 1px solid var(--border);
+            background: var(--surface-raised); color: var(--text); box-shadow: var(--card-shadow);
         }
         .story-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing-75); }
         .chip {
             display: inline-flex; align-items: center; gap: var(--spacing-50);
-            padding: var(--spacing-50) var(--spacing-75);
-            border-radius: var(--rounded-full);
+            padding: var(--spacing-50) var(--spacing-75); border-radius: var(--rounded-md);
             background: var(--surface-muted); color: var(--accent);
         }
         .story-title { margin-top: var(--spacing-200); }
@@ -6940,172 +6972,170 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         .story-block-label { color: var(--text-subtle); margin-bottom: var(--spacing-75); }
         .takeaways { display: flex; flex-direction: column; gap: var(--spacing-100); }
         .takeaways li { display: flex; gap: var(--spacing-75); align-items: flex-start; }
-        .takeaways .icon { color: var(--accent); margin-top: 0; }
+        .takeaways .icon { color: var(--accent); }
         .story-foot { margin-top: var(--spacing-300); }
 
-        /* --- Problem to solution --- */
-        .compare { display: grid; gap: var(--spacing-300); }
-        @media (min-width: 768px) { .compare { grid-template-columns: 1fr 1fr; } }
-        .compare-card { padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface); }
-        @media (min-width: 768px) { .compare-card { padding: var(--spacing-400); } }
-        .compare-card.is-strong { background: var(--surface-raised); border-color: var(--border-strong); }
-        .compare-list { margin-top: var(--spacing-300); display: flex; flex-direction: column; gap: var(--spacing-200); }
+        /* ==========================================================================
+           SECTIONS
+           ========================================================================== */
+        .section { padding-block: var(--spacing-800) var(--spacing-900); }
+        @media (min-width: 768px) { .section { padding-block: var(--spacing-900); } }
+        .section-head { max-width: 680px; margin-bottom: var(--spacing-600); }
+        .section-head > * + * { margin-top: var(--spacing-200); }
+        .after-hero { padding-top: var(--spacing-800); }
+        .section-flush { padding-top: 0; }
+        @media (min-width: 768px) { .section-flush { padding-top: 0; } }
+        @media (min-width: 1280px) { .after-hero { padding-top: var(--spacing-900); } .after-hero .container { padding-top: var(--spacing-900); } }
+
+        /* --- Why: a print of a crowded street against the promise --- */
+        .why { display: grid; gap: var(--spacing-600); align-items: center; }
+        @media (min-width: 1024px) { .why { grid-template-columns: 5fr 6fr; gap: var(--spacing-800); } }
+        .why-figure .photo { aspect-ratio: 6 / 5; border-radius: var(--rounded-3xl); }
+        .why-figure figcaption { margin-top: var(--spacing-100); }
+        .why .section-head { margin-bottom: 0; }
+        .compare { margin-top: var(--spacing-500); display: grid; gap: var(--spacing-400); }
+        @media (min-width: 640px) { .compare { grid-template-columns: 1fr 1fr; gap: var(--spacing-300); } }
+        .compare-col h3 { padding-bottom: var(--spacing-100); margin-bottom: var(--spacing-200); border-bottom: 1px solid var(--border); }
+        .compare-col.is-strong h3 { border-bottom-color: var(--border-strong); }
+        .compare-list { display: flex; flex-direction: column; gap: var(--spacing-200); }
         .compare-list li { display: flex; gap: var(--spacing-100); align-items: flex-start; }
-        .compare-card:not(.is-strong) .compare-list .icon { color: var(--text-subtle); }
-        .compare-card.is-strong .compare-list .icon { color: var(--accent); }
-        .compare-icon-gap { margin-top: var(--spacing-25); }
+        .compare-list .icon { margin-top: var(--spacing-25); }
+        .compare-col:not(.is-strong) .icon { color: var(--text-subtle); }
+        .compare-col.is-strong .icon { color: var(--accent); }
 
-        /* --- Benefits --- */
-        .benefits { display: grid; gap: var(--spacing-300); }
-        @media (min-width: 768px) { .benefits { grid-template-columns: repeat(2, 1fr); } }
-        @media (min-width: 1024px) {
-            .benefits { grid-template-columns: repeat(3, 1fr); }
-            .benefit-wide { grid-column: span 2; }
+        /* --- Features: asymmetric bento with small pieces of real interface --- */
+        .bento { display: grid; gap: var(--spacing-300); }
+        @media (min-width: 768px) { .bento { grid-template-columns: repeat(12, 1fr); } .b-a { grid-column: span 7; } .b-b { grid-column: span 5; } .b-c { grid-column: span 5; } .b-d { grid-column: span 7; } .b-e { grid-column: span 12; } }
+        .tile {
+            display: flex; flex-direction: column; gap: var(--spacing-300);
+            padding: var(--spacing-300); border-radius: var(--rounded-3xl);
+            border: 1px solid var(--border); background: var(--surface);
         }
-        .benefit {
-            display: flex; flex-direction: column;
-            padding: var(--spacing-300);
-            border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface);
-        }
-        @media (min-width: 768px) { .benefit { padding: var(--spacing-400); } }
-        .icon-tile {
-            display: inline-flex; align-items: center; justify-content: center;
-            width: 40px; height: 40px; border-radius: var(--rounded-lg);
-            background: var(--tile-bg); border: 1px solid var(--border); color: var(--text);
-        }
-        .benefit-title { margin-top: var(--spacing-300); }
-        .benefit-text { margin-top: var(--spacing-75); color: var(--text-muted); }
-        .spec-row { margin-top: auto; padding-top: var(--spacing-400); display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-200); }
-        .spec-value { display: block; }
-        .spec-label { display: block; margin-top: var(--spacing-50); color: var(--text-muted); }
+        @media (min-width: 768px) { .tile { padding: var(--spacing-400); } }
+        .tile-text h3 + p { margin-top: var(--spacing-75); }
+        .tile-text p { color: var(--text-muted); max-width: 520px; }
+        /* Inner panels sit 32px inside a 24px radius tile, so they keep their own radius. */
+        .ui { margin-top: auto; border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface-raised); padding: var(--spacing-200); }
+        .spec-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-200); }
+        .spec-row dt { display: block; }
+        .spec-row dd { display: block; margin-top: var(--spacing-50); color: var(--text-muted); }
+        .skel { display: block; height: 8px; border-radius: var(--rounded-full); background: var(--surface-muted); }
+        .skel + .skel { margin-top: var(--spacing-75); }
+        .skel-90 { width: 90%; } .skel-75 { width: 75%; } .skel-50 { width: 50%; }
+        .ui .link-row { margin-top: var(--spacing-200); }
+        .ui-label { display: flex; align-items: center; gap: var(--spacing-75); color: var(--accent); margin-bottom: var(--spacing-200); }
+        .ui-chips { display: flex; flex-wrap: wrap; gap: var(--spacing-75); margin-top: var(--spacing-200); }
+        .ui-chip { display: inline-flex; align-items: center; height: 28px; padding: 0 var(--spacing-100); border-radius: var(--rounded-md); border: 1px solid var(--border); background: var(--bg); }
+        .ui-chip .skel { width: 40px; height: 6px; }
+        .ui-chip .skel-chip-lg { width: 56px; } .ui-chip .skel-chip-sm { width: 32px; }
+        .source-stack { display: flex; flex-direction: column; }
+        .source-stack li { display: flex; justify-content: space-between; align-items: center; gap: var(--spacing-200); padding-block: var(--spacing-100); }
+        .source-stack li + li { border-top: 1px solid var(--border); }
+        .link-row { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-200); padding: var(--spacing-100) var(--spacing-200); border-radius: var(--rounded-lg); background: var(--bg); border: 1px solid var(--border); }
+        .link-row span { display: inline-flex; align-items: center; gap: var(--spacing-75); }
+        .b-e { gap: var(--spacing-400); }
+        @media (min-width: 768px) { .b-e { flex-direction: row; align-items: center; justify-content: space-between; } .b-e .ui { margin-top: 0; } }
+        .action-row { display: flex; flex-wrap: wrap; gap: var(--spacing-100); }
+        .action { display: inline-flex; align-items: center; gap: var(--spacing-75); padding: var(--spacing-75) var(--spacing-100); border-radius: var(--rounded-lg); background: var(--bg); border: 1px solid var(--border); }
+        .action .icon { color: var(--accent); }
 
-        /* --- Tagline reveal --- */
-        .tagline-section { padding-block: var(--spacing-800); }
-        @media (min-width: 768px) { .tagline-section { padding-block: var(--spacing-900); } }
-        .tagline { max-width: 680px; margin-inline: auto; text-align: center; }
+        /* --- Tagline: full bleed mountains, words light up one at a time --- */
+        .tagline-section { position: relative; isolation: isolate; color: #F2EFE6; display: flex; align-items: center; min-height: max(560px, 86svh); padding-block: var(--spacing-900); }
+        .tagline-section .photo { position: absolute; inset: 0; z-index: -1; }
+        .tagline-section .photo img { object-position: 50% 35%; filter: brightness(0.82); }
+        .tagline-section .photo::before { background: rgba(19, 18, 9, 0.3); }
+        .tagline { max-width: 760px; }
         .tagline .word { transition: opacity var(--duration-layout) var(--ease); }
         .js .tagline .word { opacity: 0.3; }
         .js .tagline .word.is-on { opacity: 1; }
+        .tagline-credit { right: var(--spacing-300); bottom: var(--spacing-300); background: rgba(19, 18, 9, 0.5); color: #D9D4C6; }
 
-        /* --- How it works --- */
-        .steps { display: grid; gap: var(--spacing-300); counter-reset: step; }
-        @media (min-width: 768px) { .steps { grid-template-columns: repeat(3, 1fr); } }
-        .step { padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface); }
-        @media (min-width: 768px) { .step { padding: var(--spacing-400); } }
-        .step-top { display: flex; align-items: center; justify-content: space-between; }
-        .step-title { margin-top: var(--spacing-300); }
-        .step-text { margin-top: var(--spacing-75); color: var(--text-muted); }
+        /* --- How it works: a numbered line, not three boxes --- */
+        .steps { display: grid; gap: var(--spacing-500); }
+        @media (min-width: 768px) { .steps { grid-template-columns: repeat(3, 1fr); gap: var(--spacing-400); } }
+        .step-num { display: flex; align-items: center; gap: var(--spacing-200); color: var(--accent); }
+        .step-num::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+        .step h3 { margin-top: var(--spacing-300); }
+        .step p { margin-top: var(--spacing-75); color: var(--text-muted); }
 
-        /* --- Proof / sources --- */
-        .proof { display: grid; gap: var(--spacing-600); align-items: start; }
-        @media (min-width: 1024px) { .proof { grid-template-columns: 5fr 7fr; gap: var(--spacing-700); } }
-        .proof .section-head { margin-bottom: 0; }
-        .proof-note { display: flex; gap: var(--spacing-100); align-items: flex-start; margin-top: var(--spacing-300); color: var(--text-muted); }
-        .proof-note .icon { color: var(--accent); }
-        .source-grid { display: grid; gap: var(--spacing-200); }
-        @media (min-width: 640px) { .source-grid { grid-template-columns: repeat(2, 1fr); } }
-        .source-tile { padding: var(--spacing-200) var(--spacing-300); border-radius: var(--rounded-xl); border: 1px solid var(--border); background: var(--surface); }
-        .source-tile .caption-5 { display: block; margin-top: var(--spacing-50); color: var(--text-subtle); }
-        .stat-tile { padding: var(--spacing-300); border-radius: var(--rounded-xl); border: 1px solid var(--border-strong); background: var(--surface-raised); }
-        @media (min-width: 640px) { .stat-tile { grid-column: 1 / -1; } }
-        .stat-tile .caption-2 { display: block; margin-top: var(--spacing-75); color: var(--text-muted); }
-
-        /* --- FAQ --- */
-        .faq { display: grid; gap: var(--spacing-600); }
-        @media (min-width: 1024px) { .faq { grid-template-columns: 4fr 8fr; gap: var(--spacing-700); } }
-        .faq .section-head { margin-bottom: 0; }
-        .faq-list { display: flex; flex-direction: column; gap: var(--spacing-100); }
-        .faq-item { border-radius: var(--rounded-xl); border: 1px solid var(--border); background: var(--surface); }
-        .faq-item summary {
-            display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-200);
-            padding: var(--spacing-200) var(--spacing-300);
-            border-radius: var(--rounded-xl);
-            cursor: pointer; list-style: none;
-            transition: background-color var(--duration-color) var(--ease);
-        }
-        .faq-item summary::-webkit-details-marker { display: none; }
-        .faq-item summary:hover { background: var(--surface-muted); }
-        .faq-item[open] summary:hover { background: transparent; }
-        .faq-item summary .icon { color: var(--text-muted); transition: transform var(--duration-layout) var(--ease); }
-        .faq-item[open] summary .icon { transform: rotate(45deg); }
-        .faq-answer { padding: 0 var(--spacing-300) var(--spacing-300); color: var(--text-muted); }
-        .faq-item[open] .faq-answer { animation: faq-in var(--duration-layout) var(--ease); }
-        @keyframes faq-in { from { opacity: 0; transform: translateY(calc(var(--spacing-75) * -1)); } to { opacity: 1; transform: none; } }
-
-        /* --- Testimonials --- */
-        .quotes { display: grid; gap: var(--spacing-300); }
-        @media (min-width: 768px) { .quotes { grid-template-columns: repeat(2, 1fr); } }
-        @media (min-width: 1024px) { .quotes { grid-template-columns: repeat(3, 1fr); } }
-        .quote-card {
-            margin: 0; display: flex; flex-direction: column; gap: var(--spacing-300);
-            padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface);
-        }
-        @media (min-width: 768px) { .quote-card { padding: var(--spacing-400); } }
-        .quote-card blockquote { margin: 0; }
-        .quote-person { margin-top: auto; display: flex; align-items: center; gap: var(--spacing-100); }
+        /* --- Readers --- */
+        .quotes { columns: 1; column-gap: var(--spacing-300); }
+        @media (min-width: 768px) { .quotes { columns: 2; } }
+        @media (min-width: 1024px) { .quotes { columns: 3; } }
+        .quote-card { break-inside: avoid; margin: 0 0 var(--spacing-300); display: flex; flex-direction: column; gap: var(--spacing-300); padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface); }
+        .quote-person { display: flex; align-items: center; gap: var(--spacing-100); }
         .quote-name, .quote-detail { display: block; }
         .quote-detail { margin-top: var(--spacing-25); }
-        .avatar {
-            display: inline-flex; align-items: center; justify-content: center; flex: none;
-            width: 40px; height: 40px; border-radius: var(--rounded-full);
-            background: var(--tile-bg); border: 1px solid var(--border);
-        }
-        .quotes-foot { margin-top: var(--spacing-400); }
-        .quotes-empty {
-            display: flex; flex-direction: column; align-items: flex-start; gap: var(--spacing-300);
-            padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface);
-        }
-        .quotes-empty-text p { margin-top: var(--spacing-75); }
-        @media (min-width: 768px) {
-            .quotes-empty { flex-direction: row; align-items: center; padding: var(--spacing-400); }
-            .quotes-empty-text { flex: 1; }
-        }
+        .avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 40px; height: 40px; border-radius: var(--rounded-xl); background: var(--surface-muted); }
+        .quotes-foot { margin-top: var(--spacing-200); }
+        .invite { display: grid; gap: var(--spacing-300); align-items: center; padding: var(--spacing-400); border-radius: var(--rounded-3xl); border: 1px solid var(--border); background: var(--surface); }
+        @media (min-width: 768px) { .invite { grid-template-columns: auto 1fr auto; padding: var(--spacing-500); } }
+        .invite .icon-lg { color: var(--accent); }
+        .invite p { margin-top: var(--spacing-75); color: var(--text-muted); max-width: 560px; }
 
-        /* --- Final CTA --- */
-        .cta-panel {
-            padding: var(--spacing-600) var(--spacing-300);
-            border-radius: var(--rounded-3xl); border: 1px solid var(--border); background: var(--surface);
-            text-align: center;
-        }
-        @media (min-width: 768px) { .cta-panel { padding: var(--spacing-800) var(--spacing-600); } }
-        .cta-panel .cta-text { max-width: 560px; margin: var(--spacing-200) auto 0; color: var(--text-muted); }
-        .cta-panel .hero-actions { margin-top: var(--spacing-400); }
+        /* --- Sources: an editorial index --- */
+        .sources { display: grid; gap: var(--spacing-600); }
+        @media (min-width: 1024px) { .sources { grid-template-columns: 5fr 6fr; gap: var(--spacing-800); } }
+        .sources .section-head { margin-bottom: 0; }
+        .proof-note { display: flex; gap: var(--spacing-100); align-items: flex-start; margin-top: var(--spacing-300); color: var(--text-muted); }
+        .proof-note .icon { color: var(--accent); }
+        .index-list li { display: flex; align-items: baseline; justify-content: space-between; gap: var(--spacing-200); padding-block: var(--spacing-200); border-top: 1px solid var(--border); }
+        .index-list li:last-child { border-bottom: 1px solid var(--border); }
+        .index-list .is-muted { color: var(--text-subtle); }
+        .stat { display: flex; align-items: baseline; gap: var(--spacing-200); margin-bottom: var(--spacing-400); }
 
-        /* --- Footer --- */
-        .site-footer { padding-block: var(--spacing-600) var(--spacing-400); border-top: 1px solid var(--border); }
+        /* --- FAQ: every answer visible, side by side --- */
+        .faq-grid { display: grid; gap: var(--spacing-500) var(--spacing-600); }
+        @media (min-width: 768px) { .faq-grid { grid-template-columns: 1fr 1fr; } }
+        .faq-grid dt { padding-top: var(--spacing-200); border-top: 1px solid var(--border); }
+        .faq-grid dd { margin-top: var(--spacing-75); color: var(--text-muted); }
+
+        /* --- Footer: the last print, with the final call to action on its sky --- */
+        .site-footer { position: relative; isolation: isolate; color: var(--on-photo); padding-top: var(--spacing-900); }
+        .site-footer > .photo { position: absolute; inset: 0; z-index: -1; }
+        .site-footer > .photo img { object-position: 50% 0%; }
+        .final-cta { max-width: 680px; }
+        .final-cta p { margin-top: var(--spacing-200); color: var(--on-photo-muted); }
+        .final-cta .hero-actions { margin-top: var(--spacing-400); }
+        .final-cta .text-link { color: var(--on-photo); }
+        .footer-panel {
+            margin-top: var(--spacing-900); margin-bottom: var(--spacing-300);
+            padding: var(--spacing-400) var(--spacing-300); border-radius: var(--rounded-3xl);
+            border: 1px solid var(--border); background: var(--panel-bg); color: var(--text);
+            -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+        }
+        @media (min-width: 768px) { .footer-panel { padding: var(--spacing-500); } }
         .footer-top { display: grid; gap: var(--spacing-400); }
         @media (min-width: 768px) { .footer-top { grid-template-columns: 2fr 1fr 1fr; } }
         .footer-brand { display: inline-flex; align-items: center; gap: var(--spacing-75); }
         .footer-brand .icon { color: var(--accent); }
-        .footer-col h2 { color: var(--text); margin-bottom: var(--spacing-100); }
+        .footer-blurb { margin-top: var(--spacing-100); max-width: 320px; color: var(--text-muted); }
+        .footer-col h2 { margin-bottom: var(--spacing-100); }
         .footer-col ul { display: flex; flex-direction: column; gap: var(--spacing-75); }
         .footer-col a { color: var(--text-muted); transition: color var(--duration-color) var(--ease); }
         .footer-col a:hover { color: var(--text); }
-        .footer-bottom { margin-top: var(--spacing-600); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--spacing-100); color: var(--text-subtle); }
+        .footer-bottom { margin-top: var(--spacing-400); padding-top: var(--spacing-200); border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--spacing-100); color: var(--text-subtle); }
 
         /* ==========================================================================
            SCROLL REVEAL (only when JS runs, so content never hides without it)
            ========================================================================== */
-        .js [data-reveal] {
-            opacity: 0; transform: translateY(var(--spacing-400));
-            transition: opacity 700ms var(--ease), transform 700ms var(--ease);
-        }
+        .js [data-reveal] { opacity: 0; transform: translateY(var(--spacing-400)); transition: opacity 700ms var(--ease), transform 700ms var(--ease); }
         .js [data-reveal].is-visible { opacity: 1; transform: none; }
 
         @media (prefers-reduced-motion: reduce) {
             html { scroll-behavior: auto; }
-            .js [data-reveal] { transform: none; }
+            .js [data-reveal], .js .hero-copy > * { transform: none; }
+            .hero-media img { transform: none; transition: none; }
             .menu-item, .mobile-menu.is-open .menu-item { transform: none; }
-            .nav-toggle-line, .btn, .btn .icon, .text-link .icon, .faq-item summary .icon { transition-property: opacity, background-color, color, border-color; }
+            .nav-toggle-line, .btn, .btn .icon, .text-link .icon { transition-property: opacity, background-color, color, border-color; }
             .btn:active { transform: none; }
-            .faq-item[open] .faq-answer { animation: none; }
             .live-dot { animation: none; }
             .js .tagline .word { opacity: 1; }
         }
     </style>
 </head>
 <body>
-    {# Phosphor icons (regular weight, MIT), inlined as a sprite so the page needs no icon font. #}
+    {# Phosphor icons (MIT), inlined as a sprite so the page needs no icon font. #}
     <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
     <symbol id="ph-lightning-fill" viewBox="0 0 256 256"><path d="M213.85,125.46l-112,120a8,8,0,0,1-13.69-7l14.66-73.33L45.19,143.49a8,8,0,0,1-3-13l112-120a8,8,0,0,1,13.69,7L153.18,90.9l57.63,21.61a8,8,0,0,1,3,12.95Z"/></symbol>
     <symbol id="ph-arrow-right" viewBox="0 0 256 256"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z"/></symbol>
@@ -7125,6 +7155,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     <symbol id="ph-rss-simple" viewBox="0 0 256 256"><path d="M224,192a8,8,0,0,1-16,0c0-79.4-64.6-144-144-144a8,8,0,0,1,0-16C152.22,32,224,103.78,224,192ZM64,104a8,8,0,0,0,0,16,72.08,72.08,0,0,1,72,72,8,8,0,0,0,16,0A88.1,88.1,0,0,0,64,104Zm4,72a12,12,0,1,0,12,12A12,12,0,0,0,68,176Z"/></symbol>
     <symbol id="ph-quotes-fill" viewBox="0 0 256 256"><path d="M116,72v88a48.05,48.05,0,0,1-48,48,8,8,0,0,1,0-16,32,32,0,0,0,32-32v-8H40a16,16,0,0,1-16-16V72A16,16,0,0,1,40,56h60A16,16,0,0,1,116,72ZM216,56H156a16,16,0,0,0-16,16v64a16,16,0,0,0,16,16h60v8a32,32,0,0,1-32,32,8,8,0,0,0,0,16,48.05,48.05,0,0,0,48-48V72A16,16,0,0,0,216,56Z"/></symbol>
     <symbol id="ph-chat-circle-text" viewBox="0 0 256 256"><path d="M168,112a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,112Zm-8,24H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16Zm72-8A104,104,0,0,1,79.12,219.82L45.07,231.17a16,16,0,0,1-20.24-20.24l11.35-34.05A104,104,0,1,1,232,128Zm-16,0A88,88,0,1,0,51.81,172.06a8,8,0,0,1,.66,6.54L40,216,77.4,203.53a7.85,7.85,0,0,1,2.53-.42,8,8,0,0,1,4,1.08A88,88,0,0,0,216,128Z"/></symbol>
+    <symbol id="ph-note-pencil" viewBox="0 0 256 256"><path d="M229.66,58.34l-32-32a8,8,0,0,0-11.32,0l-96,96A8,8,0,0,0,88,128v32a8,8,0,0,0,8,8h32a8,8,0,0,0,5.66-2.34l96-96A8,8,0,0,0,229.66,58.34ZM124.69,152H104V131.31l64-64L188.69,88ZM200,76.69,179.31,56,192,43.31,212.69,64ZM224,128v80a16,16,0,0,1-16,16H48a16,16,0,0,1-16-16V48A16,16,0,0,1,48,32h80a8,8,0,0,1,0,16H48V208H208V128a8,8,0,0,1,16,0Z"/></symbol>
+    <symbol id="ph-image" viewBox="0 0 256 256"><path d="M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40Zm0,16V158.75l-26.07-26.06a16,16,0,0,0-22.63,0l-20,20-44-44a16,16,0,0,0-22.62,0L40,149.37V56ZM40,172l52-52,80,80H40Zm176,28H194.63l-36-36,20-20L216,181.38V200ZM144,100a12,12,0,1,1,12,12A12,12,0,0,1,144,100Z"/></symbol>
 </svg>
 
     <a class="skip-link button-sm" href="#main">Skip to content</a>
@@ -7137,8 +7169,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             </a>
             <ul class="nav-links title-4">
                 <li><a href="#why" data-spy>Why BrieflyAI</a></li>
+                <li><a href="#features" data-spy>Features</a></li>
                 <li><a href="#how" data-spy>How it works</a></li>
-                <li><a href="#sources" data-spy>Sources</a></li>
                 <li><a href="#faq" data-spy>FAQ</a></li>
             </ul>
             <a class="btn btn-primary button-sm nav-cta" href="{{ url_for('index') }}">Read today's briefing</a>
@@ -7153,177 +7185,220 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         <nav aria-label="Mobile">
             <ul class="mobile-menu-list heading-5">
                 <li class="menu-item"><a href="#why" data-spy>Why BrieflyAI</a></li>
+                <li class="menu-item"><a href="#features" data-spy>Features</a></li>
                 <li class="menu-item"><a href="#how" data-spy>How it works</a></li>
-                <li class="menu-item"><a href="#sources" data-spy>Sources</a></li>
                 <li class="menu-item"><a href="#faq" data-spy>FAQ</a></li>
             </ul>
         </nav>
         <div class="menu-item">
-            <a class="btn btn-primary button-md" href="{{ url_for('index') }}">
-                Read today's briefing
-                <svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg>
-            </a>
+            <a class="btn btn-primary button-md" href="{{ url_for('index') }}">Read today's briefing<svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg></a>
         </div>
     </div>
 
     <main id="main">
         {# ================= HERO ================= #}
         <section class="hero" id="top" aria-labelledby="hero-title">
-            <div class="container hero-inner">
-                <p class="hero-badge caption-4">
-                    <span class="live-dot" aria-hidden="true"></span>
-                    Free AI news briefings for India
-                </p>
-                <h1 class="hero-title heading-3 md:heading-2 lg:heading-1" id="hero-title"><span class="hero-title-text">India's news,<br> one minute per story</span></h1>
-                <p class="hero-sub body-3 md:body-7">
-                    Know what happened today without opening ten tabs. Every story gets a neutral summary of under 60 words and three or four key takeaways, with the original article one tap away.
-                </p>
-                <div class="hero-actions">
-                    <a class="btn btn-primary button-md" href="{{ url_for('index') }}">
-                        Read today's briefing
-                        <svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg>
-                    </a>
-                    <p class="caption-2 subtle">Free to read. No account or card needed.</p>
-                </div>
-                <div class="hero-proof">
-                    <p class="caption-4 subtle">Main feed from</p>
-                    <ul class="source-row title-4" aria-label="News sources in the main feed">
-                        {% for name in sources %}<li>{{ name }}</li>{% endfor %}
-                    </ul>
-                </div>
-
-                <div class="story-stack" data-reveal>
-                    <div class="story-ghost story-ghost-back" aria-hidden="true"></div>
-                    <div class="story-ghost story-ghost-mid" aria-hidden="true"></div>
-                    {% if sample_story %}
-                    <article class="story-card" aria-label="A real BrieflyAI summary">
-                        <div class="story-card-head">
-                            <span class="chip caption-3"><span class="live-dot" aria-hidden="true"></span>Real summary from BrieflyAI</span>
-                            <span class="caption-5 subtle">{{ sample_story.source }}{% if sample_story.published %} · {{ sample_story.published }}{% endif %}</span>
-                        </div>
-                        <p class="story-title title-1">{{ sample_story.title }}</p>
-                        <div class="story-block">
-                            <p class="story-block-label caption-3">AI summary</p>
-                            <p class="body-3">{{ sample_story.summary }}</p>
-                        </div>
-                        <div class="story-block">
-                            <p class="story-block-label caption-3">Key takeaways</p>
-                            <ul class="takeaways">
-                                {% for point in sample_story.takeaways %}
-                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">{{ point }}</span></li>
-                                {% endfor %}
-                            </ul>
-                        </div>
-                        <p class="story-foot">
-                            <a class="text-link button-sm" href="{{ sample_story.url }}">Open this story<svg class="icon icon-sm" aria-hidden="true"><use href="#ph-arrow-up-right"></use></svg></a>
-                        </p>
-                    </article>
-                    {% else %}
-                    <article class="story-card" aria-label="What every BrieflyAI summary contains">
-                        <div class="story-card-head">
-                            <span class="chip caption-3">How every summary looks</span>
-                            <span class="caption-5 subtle">Publisher · Time in IST</span>
-                        </div>
-                        <p class="story-title title-1">The publisher's headline, exactly as they wrote it</p>
-                        <div class="story-block">
-                            <p class="story-block-label caption-3">AI summary</p>
-                            <p class="body-3">A neutral summary of under 60 words. It opens with the single most important fact, so you know what changed before you decide to read further.</p>
-                        </div>
-                        <div class="story-block">
-                            <p class="story-block-label caption-3">Key takeaways</p>
-                            <ul class="takeaways">
-                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Three or four takeaways for every story.</span></li>
-                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Each one is a single sentence.</span></li>
-                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Each stays under 20 words, so you can scan them.</span></li>
-                            </ul>
-                        </div>
-                        <p class="story-foot">
-                            <a class="text-link button-sm" href="{{ url_for('index') }}">See today's stories<svg class="icon icon-sm" aria-hidden="true"><use href="#ph-arrow-up-right"></use></svg></a>
-                        </p>
-                    </article>
-                    {% endif %}
+            <div class="hero-media photo">
+                <picture>
+                    <source media="(max-width: 767px)" srcset="{{ url_for('static', filename='landing/hero-nirmahal-ghat-mobile-900.webp') }}" type="image/webp">
+                    <img src="{{ url_for('static', filename='landing/hero-nirmahal-ghat-2400.webp') }}"
+                         srcset="{{ url_for('static', filename='landing/hero-nirmahal-ghat-1200.webp') }} 1200w, {{ url_for('static', filename='landing/hero-nirmahal-ghat-2400.webp') }} 2400w"
+                         sizes="100vw" width="2400" height="1258" fetchpriority="high" decoding="async"
+                         alt="Boats moored on the Hooghly river at Nirmahal Ghat in Calcutta around 1890, with the old pontoon bridge on the horizon">
+                </picture>
+            </div>
+            <div class="container hero-content">
+                <div class="hero-copy">
+                    <p class="hero-badge caption-4"><span class="live-dot" aria-hidden="true"></span>Free AI news briefings for India</p>
+                    <h1 class="hero-title heading-3 md:heading-2 lg:heading-1" id="hero-title"><span class="hero-title-text">India's news,<br> one minute per story</span></h1>
+                    <p class="hero-sub body-3 md:body-7">Know what happened today without opening ten tabs. Every story gets a neutral summary of under 60 words and three or four key takeaways, with the original article one tap away.</p>
+                    <div class="hero-actions">
+                        <a class="btn btn-primary button-md" href="{{ url_for('index') }}">Read today's briefing<svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg></a>
+                        <p class="hero-note frost caption-2">Free to read. No account or card needed.</p>
+                    </div>
+                    <div class="hero-proof frost">
+                        <p class="caption-4 hero-proof-label">Main feed from</p>
+                        <ul class="hero-sources title-4" aria-label="News sources in the main feed">
+                            {% for name in sources %}<li>{{ name }}</li>{% endfor %}
+                        </ul>
+                        {% if sources|length > 2 %}<p class="hero-proof-short caption-1">From {{ sources[0] }}, {{ sources[1] }} and {{ sources|length - 2 }} more newsrooms</p>{% endif %}
+                    </div>
                 </div>
             </div>
+            <p class="credit-on-photo hero-credit caption-5"><svg class="icon icon-sm" aria-hidden="true"><use href="#ph-image"></use></svg>Nirmahal Ghat, Calcutta, c. 1890</p>
+
         </section>
 
-        {# ================= PROBLEM TO SOLUTION ================= #}
-        <section class="section" id="why" aria-labelledby="why-title">
+        <div class="hero-card-wrap">
             <div class="container">
-                <div class="section-head" data-reveal>
-                    <p class="eyebrow caption-3">Why BrieflyAI</p>
-                    <h2 class="heading-4 md:heading-2" id="why-title">The news should not take your whole morning</h2>
-                    <p class="body-3 md:body-7 muted">Most of us skim the same story on three sites, click into a long article, and still have to hunt for the one fact that changed. BrieflyAI puts that fact first.</p>
-                </div>
-                <div class="compare" data-reveal>
-                    <div class="compare-card">
-                        <h3 class="title-2 muted">The usual routine</h3>
-                        <ul class="compare-list body-3 muted">
-                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Open several news sites to cover one day</li>
-                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Read the same story more than once</li>
-                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Scroll past background to find what changed</li>
-                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Close the tabs still unsure what mattered</li>
+                {% if sample_story %}
+                <article class="story-card" aria-label="A real BrieflyAI summary">
+                    <div class="story-card-head">
+                        <span class="chip caption-3"><span class="live-dot" aria-hidden="true"></span>Real summary from BrieflyAI</span>
+                        <span class="caption-5 subtle">{{ sample_story.source }}{% if sample_story.published %} · {{ sample_story.published }}{% endif %}</span>
+                    </div>
+                    <p class="story-title title-1">{{ sample_story.title }}</p>
+                    <div class="story-block">
+                        <p class="story-block-label caption-3">AI summary</p>
+                        <p class="body-6">{{ sample_story.summary }}</p>
+                    </div>
+                    <div class="story-block">
+                        <p class="story-block-label caption-3">Key takeaways</p>
+                        <ul class="takeaways">
+                            {% for point in sample_story.takeaways %}
+                            <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">{{ point }}</span></li>
+                            {% endfor %}
                         </ul>
                     </div>
-                    <div class="compare-card is-strong">
-                        <h3 class="title-2">With BrieflyAI</h3>
-                        <ul class="compare-list body-3">
-                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-check-circle"></use></svg>One feed built from {% if source_count_word %}{{ source_count_word }} {% endif %}major newsrooms</li>
-                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-check-circle"></use></svg>The main fact in the first sentence</li>
-                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-check-circle"></use></svg>Three or four takeaways you can scan</li>
-                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-check-circle"></use></svg>The original article one tap away</li>
+                    <p class="story-foot"><a class="text-link button-sm" href="{{ sample_story.url }}">Open this story<svg class="icon icon-sm" aria-hidden="true"><use href="#ph-arrow-up-right"></use></svg></a></p>
+                </article>
+                {% else %}
+                <article class="story-card" aria-label="What every BrieflyAI summary contains">
+                    <div class="story-card-head">
+                        <span class="chip caption-3">How every summary looks</span>
+                        <span class="caption-5 subtle">Publisher · Time in IST</span>
+                    </div>
+                    <p class="story-title title-1">The publisher's headline, exactly as they wrote it</p>
+                    <div class="story-block">
+                        <p class="story-block-label caption-3">AI summary</p>
+                        <p class="body-6">A neutral summary of under 60 words. It opens with the single most important fact, so you know what changed before you decide to read further.</p>
+                    </div>
+                    <div class="story-block">
+                        <p class="story-block-label caption-3">Key takeaways</p>
+                        <ul class="takeaways">
+                            <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Three or four takeaways for every story.</span></li>
+                            <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Each one is a single sentence.</span></li>
+                            <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Each stays under 20 words, so you can scan them.</span></li>
                         </ul>
+                    </div>
+                    <p class="story-foot"><a class="text-link button-sm" href="{{ url_for('index') }}">See today's stories<svg class="icon icon-sm" aria-hidden="true"><use href="#ph-arrow-up-right"></use></svg></a></p>
+                </article>
+                {% endif %}
+            </div>
+        </div>
+
+        {# ================= WHY ================= #}
+        <section class="section after-hero" id="why" aria-labelledby="why-title">
+            <div class="container why">
+                <figure class="why-figure" data-reveal>
+                    <div class="photo">
+                        <img src="{{ url_for('static', filename='landing/chitpore-road-1400.webp') }}"
+                             srcset="{{ url_for('static', filename='landing/chitpore-road-800.webp') }} 800w, {{ url_for('static', filename='landing/chitpore-road-1400.webp') }} 1400w"
+                             sizes="(min-width: 1024px) 520px, 100vw" width="1400" height="1151" loading="lazy" decoding="async"
+                             alt="A crowded corner of Chitpore Road in Calcutta around 1890, with carts, shopfronts and people crossing the street">
+                    </div>
+                    <figcaption class="credit caption-5">Chitpore Road, Calcutta, c. 1890. Everything at once.</figcaption>
+                </figure>
+                <div data-reveal>
+                    <div class="section-head">
+                        <p class="eyebrow caption-3">Why BrieflyAI</p>
+                        <h2 class="heading-4 md:heading-2" id="why-title">The news should not take your whole morning</h2>
+                        <p class="body-3 md:body-7 muted">Most of us skim the same story on three sites, click into a long article, and still have to hunt for the one fact that changed. BrieflyAI puts that fact first.</p>
+                    </div>
+                    <div class="compare">
+                        <div class="compare-col">
+                            <h3 class="title-3 muted">The usual routine</h3>
+                            <ul class="compare-list body-6 muted">
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Several news sites to cover one day</li>
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-x-circle"></use></svg>The same story read more than once</li>
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Background to scroll past before what changed</li>
+                            </ul>
+                        </div>
+                        <div class="compare-col is-strong">
+                            <h3 class="title-3">With BrieflyAI</h3>
+                            <ul class="compare-list body-6">
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg>One feed built from {% if source_count_word %}{{ source_count_word }} {% endif %}major newsrooms</li>
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg>The main fact in the first sentence</li>
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg>The original article one tap away</li>
+                            </ul>
+                        </div>
                     </div>
                 </div>
             </div>
         </section>
 
-        {# ================= BENEFITS ================= #}
-        <section class="section" id="benefits" aria-labelledby="benefits-title">
+        {# ================= FEATURES ================= #}
+        <section class="section" id="features" aria-labelledby="features-title">
             <div class="container">
                 <div class="section-head" data-reveal>
                     <p class="eyebrow caption-3">What you get</p>
-                    <h2 class="heading-4 md:heading-2" id="benefits-title">Built for a quick read, not a long scroll</h2>
+                    <h2 class="heading-4 md:heading-2" id="features-title">Built for a quick read, not a long scroll</h2>
                 </div>
-                <div class="benefits">
-                    <div class="benefit benefit-wide" data-reveal>
-                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-timer"></use></svg></span>
-                        <h3 class="benefit-title title-1">The gist in under a minute</h3>
-                        <p class="benefit-text body-3">Every story is cut to a summary that leads with the most important fact, followed by three or four one sentence takeaways.</p>
-                        <dl class="spec-row">
-                            <div><dt class="spec-value heading-4">60</dt><dd class="spec-label caption-2">word limit for each summary</dd></div>
-                            <div><dt class="spec-value heading-4">3 to 4</dt><dd class="spec-label caption-2">takeaways for every story</dd></div>
-                            <div><dt class="spec-value heading-4">1 tap</dt><dd class="spec-label caption-2">to the original article</dd></div>
+                <div class="bento">
+                    <div class="tile b-a" data-reveal>
+                        <div class="tile-text">
+                            <h3 class="title-1">The gist in under a minute</h3>
+                            <p class="body-3">Every story is cut to a summary that leads with the most important fact, followed by three or four one sentence takeaways.</p>
+                        </div>
+                        <dl class="ui spec-row">
+                            <div><dt class="heading-4">60</dt><dd class="caption-2">word limit for each summary</dd></div>
+                            <div><dt class="heading-4">3 to 4</dt><dd class="caption-2">takeaways for every story</dd></div>
+                            <div><dt class="heading-4">1 tap</dt><dd class="caption-2">to the original article</dd></div>
                         </dl>
                     </div>
-                    <div class="benefit" data-reveal>
-                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-sparkle"></use></svg></span>
-                        <h3 class="benefit-title title-1">The big picture first</h3>
-                        <p class="benefit-text body-3">A two sentence briefing at the top of the feed connects the day's main themes, with topic tags you can tap to search.</p>
+                    <div class="tile b-b" data-reveal>
+                        <div class="tile-text">
+                            <h3 class="title-1">The big picture first</h3>
+                            <p class="body-3">A two sentence briefing at the top of the feed connects the day's main themes, with topic tags you can tap to search.</p>
+                        </div>
+                        <div class="ui" aria-hidden="true">
+                            <p class="ui-label caption-3"><svg class="icon icon-sm"><use href="#ph-sparkle"></use></svg>Today's briefing</p>
+                            <span class="skel skel-90"></span>
+                            <span class="skel skel-75"></span>
+                            <span class="skel skel-50"></span>
+                            <div class="ui-chips"><span class="ui-chip"><span class="skel"></span></span><span class="ui-chip"><span class="skel skel-chip-lg"></span></span><span class="ui-chip"><span class="skel skel-chip-sm"></span></span></div>
+                        </div>
                     </div>
-                    <div class="benefit" data-reveal>
-                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-stack"></use></svg></span>
-                        <h3 class="benefit-title title-1">Major newsrooms, one feed</h3>
-                        <p class="benefit-text body-3">Stories from {{ sources_sentence }} land in one place, alongside the week's popular stories and yesterday's headlines.</p>
+                    <div class="tile b-c" data-reveal>
+                        <div class="tile-text">
+                            <h3 class="title-1">Major newsrooms, one feed</h3>
+                            <p class="body-3">Stories land in one place, alongside the week's popular stories and yesterday's headlines.</p>
+                        </div>
+                        <ul class="ui source-stack body-5">
+                            {% for name in sources %}<li><span>{{ name }}</span><svg class="icon icon-sm accent" aria-hidden="true"><use href="#ph-check-circle"></use></svg></li>{% endfor %}
+                        </ul>
                     </div>
-                    <div class="benefit" data-reveal>
-                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-link-simple"></use></svg></span>
-                        <h3 class="benefit-title title-1">Check anything at the source</h3>
-                        <p class="benefit-text body-3">Each summary links to the publisher's original article, so you can read the full reporting whenever a story matters to you.</p>
+                    <div class="tile b-d" data-reveal>
+                        <div class="tile-text">
+                            <h3 class="title-1">Check anything at the source</h3>
+                            <p class="body-3">Each summary links to the publisher's original article, so you can read the full reporting whenever a story matters to you.</p>
+                        </div>
+                        <div class="ui" aria-hidden="true">
+                            <span class="skel skel-75"></span>
+                            <span class="skel skel-90"></span>
+                            <div class="link-row body-5">
+                                <span><svg class="icon icon-sm accent"><use href="#ph-newspaper"></use></svg>Read the original{% if sources %} at {{ sources[0] }}{% endif %}</span>
+                                <svg class="icon icon-sm"><use href="#ph-arrow-up-right"></use></svg>
+                            </div>
+                        </div>
                     </div>
-                    <div class="benefit" data-reveal>
-                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-bookmark-simple"></use></svg></span>
-                        <h3 class="benefit-title title-1">Save stories and join in</h3>
-                        <p class="benefit-text body-3">A free account lets you bookmark stories, react and reply in the comments, and post your own articles to the Community Hub.</p>
+                    <div class="tile b-e" data-reveal>
+                        <div class="tile-text">
+                            <h3 class="title-1">Save stories and join in</h3>
+                            <p class="body-3">A free account lets you bookmark stories, react and reply in the comments, and post your own articles to the Community Hub.</p>
+                        </div>
+                        <div class="ui action-row body-5" aria-hidden="true">
+                            <span class="action"><svg class="icon icon-sm"><use href="#ph-bookmark-simple"></use></svg>Bookmark</span>
+                            <span class="action"><svg class="icon icon-sm"><use href="#ph-chat-circle-text"></use></svg>Reply</span>
+                            <span class="action"><svg class="icon icon-sm"><use href="#ph-note-pencil"></use></svg>Post to Community Hub</span>
+                        </div>
                     </div>
                 </div>
             </div>
         </section>
 
-        {# ================= TAGLINE REVEAL ================= #}
+        {# ================= TAGLINE ================= #}
         <section class="tagline-section" aria-label="What BrieflyAI is for">
+            <div class="photo">
+                <img src="{{ url_for('static', filename='landing/darjeeling-2400.webp') }}"
+                     srcset="{{ url_for('static', filename='landing/darjeeling-1200.webp') }} 1200w, {{ url_for('static', filename='landing/darjeeling-2400.webp') }} 2400w"
+                     sizes="100vw" width="2400" height="1584" loading="lazy" decoding="async"
+                     alt="The Kanchenjunga range seen across layered hills from Darjeeling around 1890">
+            </div>
             <div class="container">
                 <p class="tagline heading-3 lg:heading-2" data-tagline>{% for word in tagline.split() %}<span class="word">{{ word }}</span>{% if not loop.last %} {% endif %}{% endfor %}</p>
             </div>
+            <p class="credit-on-photo tagline-credit caption-5"><svg class="icon icon-sm" aria-hidden="true"><use href="#ph-image"></use></svg>Kanchenjunga from Darjeeling, c. 1890</p>
         </section>
 
         {# ================= HOW IT WORKS ================= #}
@@ -7335,41 +7410,32 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                 </div>
                 <ol class="steps">
                     <li class="step" data-reveal>
-                        <div class="step-top">
-                            <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-newspaper"></use></svg></span>
-                            <span class="caption-3 subtle">Step 1</span>
-                        </div>
-                        <h3 class="step-title title-1">We collect the day's stories</h3>
-                        <p class="step-text body-3">New stories arrive through the day from the public news feeds of major Indian newsrooms, gathered into one feed.</p>
+                        <p class="step-num heading-4">01</p>
+                        <h3 class="title-1">We collect the day's stories</h3>
+                        <p class="body-3">New stories arrive through the day from the public news feeds of major Indian newsrooms, gathered into one feed.</p>
                     </li>
                     <li class="step" data-reveal>
-                        <div class="step-top">
-                            <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-scissors"></use></svg></span>
-                            <span class="caption-3 subtle">Step 2</span>
-                        </div>
-                        <h3 class="step-title title-1">AI condenses each one</h3>
-                        <p class="step-text body-3">When a story is opened, a language model writes a neutral summary and the key takeaways. It is saved, so the next reader gets it instantly.</p>
+                        <p class="step-num heading-4">02</p>
+                        <h3 class="title-1">AI condenses each one</h3>
+                        <p class="body-3">When a story is opened, a language model writes a neutral summary and the key takeaways. It is saved, so the next reader gets it instantly.</p>
                     </li>
                     <li class="step" data-reveal>
-                        <div class="step-top">
-                            <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-book-open"></use></svg></span>
-                            <span class="caption-3 subtle">Step 3</span>
-                        </div>
-                        <h3 class="step-title title-1">You read, then go deeper</h3>
-                        <p class="step-text body-3">Skim the takeaways, open the original when you want the full report, or bookmark the story for later.</p>
+                        <p class="step-num heading-4">03</p>
+                        <h3 class="title-1">You read, then go deeper</h3>
+                        <p class="body-3">Skim the takeaways, open the original when you want the full report, or bookmark the story for later.</p>
                     </li>
                 </ol>
             </div>
         </section>
 
-        {# ================= TESTIMONIALS ================= #}
-        <section class="section" id="readers" aria-labelledby="readers-title">
+        {# ================= READERS ================= #}
+        <section class="section section-flush" id="readers" aria-labelledby="readers-title">
             <div class="container">
+                {% if testimonials %}
                 <div class="section-head" data-reveal>
                     <p class="eyebrow caption-3">Readers</p>
                     <h2 class="heading-4 md:heading-2" id="readers-title">What readers say</h2>
                 </div>
-                {% if testimonials %}
                 <div class="quotes">
                     {% for t in testimonials %}
                     <figure class="quote-card" data-reveal>
@@ -7377,21 +7443,18 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                         <blockquote class="body-3 md:body-7">{{ t.quote }}</blockquote>
                         <figcaption class="quote-person">
                             <span class="avatar title-4" aria-hidden="true">{{ t.initials }}</span>
-                            <span>
-                                <span class="quote-name title-4">{{ t.name }}</span>
-                                {% if t.detail %}<span class="quote-detail caption-5 subtle">{{ t.detail }}</span>{% endif %}
-                            </span>
+                            <span><span class="quote-name title-4">{{ t.name }}</span>{% if t.detail %}<span class="quote-detail caption-5 subtle">{{ t.detail }}</span>{% endif %}</span>
                         </figcaption>
                     </figure>
                     {% endfor %}
                 </div>
                 <p class="quotes-foot body-6 muted" data-reveal>Read BrieflyAI often? <a class="text-link" href="{{ url_for('share_testimonial') }}">Share your experience</a></p>
                 {% else %}
-                <div class="quotes-empty" data-reveal>
-                    <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-chat-circle-text"></use></svg></span>
-                    <div class="quotes-empty-text">
-                        <h3 class="title-1">Reader notes will appear here</h3>
-                        <p class="body-3 muted">We only publish quotes from real readers who agree to be featured. Read BrieflyAI often? Tell other readers what it does for you.</p>
+                <div class="invite" data-reveal>
+                    <svg class="icon icon-lg" aria-hidden="true"><use href="#ph-quotes-fill"></use></svg>
+                    <div>
+                        <h2 class="title-1" id="readers-title">Reader notes will appear here</h2>
+                        <p class="body-3">We only publish quotes from real readers who agree to be featured. Read BrieflyAI often? Tell other readers what it does for you.</p>
                     </div>
                     <a class="btn btn-ghost button-md" href="{{ url_for('share_testimonial') }}">Share your experience</a>
                 </div>
@@ -7399,110 +7462,94 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             </div>
         </section>
 
-        {# ================= PROOF ================= #}
-        <section class="section" id="sources" aria-labelledby="sources-title">
-            <div class="container proof">
+        {# ================= SOURCES ================= #}
+        <section class="section section-flush" id="sources" aria-labelledby="sources-title">
+            <div class="container sources">
                 <div class="section-head" data-reveal>
                     <p class="eyebrow caption-3">Sources</p>
                     <h2 class="heading-4 md:heading-2" id="sources-title">Built on reporting from newsrooms you know</h2>
                     <p class="body-3 md:body-7 muted">BrieflyAI never writes the news. Every summary is generated from a published article and links straight back to it.</p>
-                    <p class="proof-note body-6">
-                        <svg class="icon" aria-hidden="true"><use href="#ph-shield-check"></use></svg>
-                        <span>AI can miss nuance. When a story matters to you, the full original is always one tap away.</span>
-                    </p>
+                    <p class="proof-note body-6"><svg class="icon" aria-hidden="true"><use href="#ph-shield-check"></use></svg><span>AI can miss nuance. When a story matters to you, the full original is always one tap away.</span></p>
                 </div>
-                <div class="source-grid" data-reveal>
+                <div data-reveal>
                     {% if weekly_summaries %}
-                    <div class="stat-tile">
-                        <span class="heading-3">{{ "{:,}".format(weekly_summaries) }}</span>
-                        <span class="caption-2">stories summarized on BrieflyAI in the last 7 days</span>
-                    </div>
+                    <p class="stat"><span class="heading-2">{{ "{:,}".format(weekly_summaries) }}</span><span class="caption-2 muted">stories summarized on BrieflyAI in the last 7 days</span></p>
                     {% endif %}
-                    {% for name in sources %}
-                    <div class="source-tile">
-                        <span class="title-2">{{ name }}</span>
-                        <span class="caption-5">In the main feed</span>
-                    </div>
-                    {% endfor %}
-                    <div class="source-tile">
-                        <span class="title-2 muted">Other outlets</span>
-                        <span class="caption-5">In popular stories and yesterday's headlines</span>
-                    </div>
+                    <ul class="index-list">
+                        {% for name in sources %}<li><span class="heading-6">{{ name }}</span><span class="caption-5 subtle">Main feed</span></li>{% endfor %}
+                        <li><span class="heading-6 is-muted">Other outlets</span><span class="caption-5 subtle">Popular and yesterday's headlines</span></li>
+                    </ul>
                 </div>
             </div>
         </section>
 
         {# ================= FAQ ================= #}
-        <section class="section" id="faq" aria-labelledby="faq-title">
-            <div class="container faq">
+        <section class="section section-flush" id="faq" aria-labelledby="faq-title">
+            <div class="container">
                 <div class="section-head" data-reveal>
                     <p class="eyebrow caption-3">FAQ</p>
                     <h2 class="heading-4 md:heading-2" id="faq-title">Questions, answered</h2>
                     <p class="body-3 muted">Something else on your mind? <a class="text-link" href="{{ url_for('contact') }}">Get in touch</a>.</p>
                 </div>
-                <div class="faq-list" data-reveal>
+                <dl class="faq-grid">
                     {% for item in faqs %}
-                    <details class="faq-item">
-                        <summary class="title-3">{{ item.q }}<svg class="icon" aria-hidden="true"><use href="#ph-plus"></use></svg></summary>
-                        <p class="faq-answer body-3">{{ item.a }}</p>
-                    </details>
-                    {% endfor %}
-                </div>
-            </div>
-        </section>
-
-        {# ================= FINAL CTA ================= #}
-        <section class="section" id="start" aria-labelledby="start-title">
-            <div class="container">
-                <div class="cta-panel" data-reveal>
-                    <h2 class="heading-4 md:heading-2" id="start-title">Start with today's briefing</h2>
-                    <p class="cta-text body-3 md:body-7">Free to read, with no account and no card. Create a free account later if you want to save stories or join the discussion.</p>
-                    <div class="hero-actions">
-                        <a class="btn btn-primary button-md" href="{{ url_for('index') }}">
-                            Read today's briefing
-                            <svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg>
-                        </a>
-                        {% if not session.user_id %}
-                        <a class="text-link caption-2" href="{{ url_for('register') }}">Create a free account</a>
-                        {% endif %}
+                    <div data-reveal>
+                        <dt class="title-2">{{ item.q }}</dt>
+                        <dd class="body-3">{{ item.a }}</dd>
                     </div>
-                </div>
+                    {% endfor %}
+                </dl>
             </div>
         </section>
     </main>
 
-    <footer class="site-footer">
+    {# ================= FINAL CTA + FOOTER ================= #}
+    <footer class="site-footer" aria-labelledby="start-title">
+        <div class="photo">
+            <img src="{{ url_for('static', filename='landing/bombay-harbour-2400.webp') }}"
+                 srcset="{{ url_for('static', filename='landing/bombay-harbour-1200.webp') }} 1200w, {{ url_for('static', filename='landing/bombay-harbour-2400.webp') }} 2400w"
+                 sizes="100vw" width="2400" height="1241" loading="lazy" decoding="async"
+                 alt="Bombay harbour around 1890, with steamers at anchor and the pier pavilion">
+        </div>
         <div class="container">
-            <div class="footer-top">
-                <div>
-                    <a class="footer-brand title-3" href="{{ url_for('landing') }}">
-                        <svg class="icon" aria-hidden="true"><use href="#ph-lightning-fill"></use></svg>
-                        <span>BrieflyAI</span>
-                    </a>
-                    <p class="body-6 muted" style="margin-top: var(--spacing-100); max-width: 320px;">Short AI summaries and key takeaways for India's top stories.</p>
+            <div class="final-cta" data-reveal>
+                <h2 class="heading-4 md:heading-2" id="start-title">Start with today's briefing</h2>
+                <p class="body-3 md:body-7">Free to read, with no account and no card. Create a free account later if you want to save stories or join the discussion.</p>
+                <div class="hero-actions">
+                    <a class="btn btn-primary button-md" href="{{ url_for('index') }}">Read today's briefing<svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg></a>
+                    {% if not session.user_id %}<a class="text-link caption-2" href="{{ url_for('register') }}">Create a free account</a>{% endif %}
                 </div>
-                <nav class="footer-col" aria-label="Read">
-                    <h2 class="title-4">Read</h2>
-                    <ul class="body-6">
-                        <li><a href="{{ url_for('index') }}">Today's briefing</a></li>
-                        <li><a href="{{ url_for('index', category_name='Popular Stories', page=1) }}">Popular stories</a></li>
-                        <li><a href="{{ url_for('index', category_name='Community Hub', page=1) }}">Community Hub</a></li>
-                        <li><a href="{{ url_for('rss_feed') }}">RSS feed</a></li>
-                    </ul>
-                </nav>
-                <nav class="footer-col" aria-label="Company">
-                    <h2 class="title-4">BrieflyAI</h2>
-                    <ul class="body-6">
-                        <li><a href="{{ url_for('about') }}">About</a></li>
-                        <li><a href="{{ url_for('contact') }}">Contact</a></li>
-                        <li><a href="{{ url_for('privacy') }}">Privacy policy</a></li>
-                        <li><a href="{{ url_for('terms') }}">Terms of service</a></li>
-                    </ul>
-                </nav>
             </div>
-            <div class="footer-bottom caption-5">
-                <span>&copy; {{ current_year }} BrieflyAI. Made in India.</span>
-                <span>Summaries are AI generated. Always check the original for the full story.</span>
+
+            <div class="footer-panel">
+                <div class="footer-top">
+                    <div>
+                        <a class="footer-brand title-3" href="{{ url_for('landing') }}"><svg class="icon" aria-hidden="true"><use href="#ph-lightning-fill"></use></svg><span>BrieflyAI</span></a>
+                        <p class="footer-blurb body-6">Short AI summaries and key takeaways for India's top stories.</p>
+                    </div>
+                    <nav class="footer-col" aria-label="Read">
+                        <h2 class="title-4">Read</h2>
+                        <ul class="body-6">
+                            <li><a href="{{ url_for('index') }}">Today's briefing</a></li>
+                            <li><a href="{{ url_for('index', category_name='Popular Stories', page=1) }}">Popular stories</a></li>
+                            <li><a href="{{ url_for('index', category_name='Community Hub', page=1) }}">Community Hub</a></li>
+                            <li><a href="{{ url_for('rss_feed') }}">RSS feed</a></li>
+                        </ul>
+                    </nav>
+                    <nav class="footer-col" aria-label="Company">
+                        <h2 class="title-4">BrieflyAI</h2>
+                        <ul class="body-6">
+                            <li><a href="{{ url_for('about') }}">About</a></li>
+                            <li><a href="{{ url_for('contact') }}">Contact</a></li>
+                            <li><a href="{{ url_for('privacy') }}">Privacy policy</a></li>
+                            <li><a href="{{ url_for('terms') }}">Terms of service</a></li>
+                        </ul>
+                    </nav>
+                </div>
+                <div class="footer-bottom caption-5">
+                    <span>&copy; {{ current_year }} BrieflyAI. Made in India. Summaries are AI generated; always check the original.</span>
+                    <span>Photochrom prints of India, c. 1890, Library of Congress. Footer: Bombay harbour.</span>
+                </div>
             </div>
         </div>
     </footer>
@@ -7512,6 +7559,9 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         var root = document.documentElement;
         root.classList.add('js');
         var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var heroImg = document.querySelector('.hero-media img');
+        var markLoaded = function () { requestAnimationFrame(function () { root.classList.add('is-loaded'); }); };
+        if (!heroImg || heroImg.complete) { markLoaded(); } else { heroImg.addEventListener('load', markLoaded); heroImg.addEventListener('error', markLoaded); setTimeout(markLoaded, 1200); }
 
         /* --- Mobile menu ------------------------------------------------------ */
         var toggle = document.getElementById('navToggle');
@@ -7519,35 +7569,26 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         var page = [document.getElementById('main'), document.querySelector('.site-footer')];
         var items = menu ? Array.prototype.slice.call(menu.querySelectorAll('.menu-item')) : [];
         var hideTimer = null;
-
-        function setInert(on) {
-            page.forEach(function (el) { if (el) { if (on) { el.setAttribute('inert', ''); } else { el.removeAttribute('inert'); } } });
-        }
+        function setInert(on) { page.forEach(function (el) { if (el) { if (on) { el.setAttribute('inert', ''); } else { el.removeAttribute('inert'); } } }); }
         function openMenu() {
             clearTimeout(hideTimer);
             menu.hidden = false;
             void menu.offsetWidth; /* commit the hidden state so the entrance animates */
             items.forEach(function (el, i) { el.style.transitionDelay = Math.min(i * 60, 400) + 'ms'; });
             menu.classList.add('is-open');
-            toggle.setAttribute('aria-expanded', 'true');
-            toggle.setAttribute('aria-label', 'Close menu');
-            root.classList.add('menu-open');
-            setInert(true);
+            toggle.setAttribute('aria-expanded', 'true'); toggle.setAttribute('aria-label', 'Close menu');
+            root.classList.add('menu-open'); setInert(true);
         }
         function closeMenu(returnFocus) {
             items.forEach(function (el) { el.style.transitionDelay = '0ms'; });
             menu.classList.remove('is-open');
-            toggle.setAttribute('aria-expanded', 'false');
-            toggle.setAttribute('aria-label', 'Open menu');
-            root.classList.remove('menu-open');
-            setInert(false);
+            toggle.setAttribute('aria-expanded', 'false'); toggle.setAttribute('aria-label', 'Open menu');
+            root.classList.remove('menu-open'); setInert(false);
             hideTimer = setTimeout(function () { menu.hidden = true; }, 300);
             if (returnFocus) { toggle.focus(); }
         }
         if (toggle && menu) {
-            toggle.addEventListener('click', function () {
-                if (menu.classList.contains('is-open')) { closeMenu(false); } else { openMenu(); }
-            });
+            toggle.addEventListener('click', function () { if (menu.classList.contains('is-open')) { closeMenu(false); } else { openMenu(); } });
             menu.addEventListener('click', function (e) { if (e.target.closest('a')) { closeMenu(false); } });
             document.addEventListener('keydown', function (e) {
                 if (!menu.classList.contains('is-open')) { return; }
@@ -7559,9 +7600,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
                 }
             });
-            var desktop = window.matchMedia('(min-width: 768px)');
-            var onBreakpoint = function (e) { if (e.matches && menu.classList.contains('is-open')) { closeMenu(false); } };
-            if (desktop.addEventListener) { desktop.addEventListener('change', onBreakpoint); }
+            var desktop = window.matchMedia('(min-width: 900px)');
+            if (desktop.addEventListener) { desktop.addEventListener('change', function (e) { if (e.matches && menu.classList.contains('is-open')) { closeMenu(false); } }); }
         }
 
         if (!('IntersectionObserver' in window)) {
@@ -7572,9 +7612,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
 
         /* --- Scroll reveals: each section once, never replayed ----------------- */
         var revealObserver = new IntersectionObserver(function (entries, obs) {
-            entries.forEach(function (entry) {
-                if (entry.isIntersecting) { entry.target.classList.add('is-visible'); obs.unobserve(entry.target); }
-            });
+            entries.forEach(function (entry) { if (entry.isIntersecting) { entry.target.classList.add('is-visible'); obs.unobserve(entry.target); } });
         }, { rootMargin: '0px 0px -10% 0px', threshold: 0 });
         document.querySelectorAll('[data-reveal]').forEach(function (el) { revealObserver.observe(el); });
 
@@ -7592,7 +7630,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         var spyObserver = new IntersectionObserver(function (entries) {
             entries.forEach(function (entry) { if (entry.isIntersecting) { setCurrent(entry.target.id); } });
         }, { rootMargin: '-45% 0px -50% 0px' });
-        ['top'].concat(sectionIds).forEach(function (id) { var el = document.getElementById(id); if (el) { spyObserver.observe(el); } });
+        ['top', 'readers', 'sources'].concat(sectionIds).forEach(function (id) { var el = document.getElementById(id); if (el) { spyObserver.observe(el); } });
 
         /* --- Tagline: words light up one at a time, in reading order ------------- */
         var tagline = document.querySelector('[data-tagline]');
@@ -7611,15 +7649,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                     progress = Math.max(0, Math.min(1, progress));
                     var target = Math.round(progress * words.length);
                     var batch = 0;
-                    while (shown < target) {
-                        words[shown].style.transitionDelay = (batch * 40) + 'ms';
-                        words[shown].classList.add('is-on');
-                        shown++; batch++;
-                    }
-                    if (shown >= words.length) {
-                        window.removeEventListener('scroll', onScroll);
-                        window.removeEventListener('resize', onScroll);
-                    }
+                    while (shown < target) { words[shown].style.transitionDelay = (batch * 40) + 'ms'; words[shown].classList.add('is-on'); shown++; batch++; }
+                    if (shown >= words.length) { window.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onScroll); }
                 };
                 var onScroll = function () { if (!ticking) { ticking = true; window.requestAnimationFrame(update); } };
                 window.addEventListener('scroll', onScroll, { passive: true });
