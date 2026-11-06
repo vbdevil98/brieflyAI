@@ -606,6 +606,25 @@ class ArticleStat(db.Model):
     last_viewed_at = db.Column(db.DateTime, nullable=True, index=True)
 
 
+class Testimonial(db.Model):
+    """
+    Reader quotes for the landing page. A quote is either sent by a signed in reader who
+    ticked the consent box, or entered by the admin with the reader's permission. Nothing
+    is shown publicly until the admin approves it. New table, so db.create_all() adds it.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete="CASCADE"), nullable=True, index=True)
+    name = db.Column(db.String(120), nullable=False)
+    attribution = db.Column(db.String(80), nullable=True)   # e.g. "Student, Pune"
+    quote = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default='pending', index=True)  # pending / approved / rejected
+    source = db.Column(db.String(20), nullable=False, default='reader')  # reader / admin
+    created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    reviewed_at = db.Column(db.DateTime, nullable=True)
+    # Deleting an account removes that reader's testimonials too.
+    user = db.relationship('User', backref=db.backref('testimonials', lazy='dynamic', cascade="all, delete-orphan"))
+
+
 def init_db():
     # To access the global 'using_postgres_flag' set earlier
     global using_postgres_flag
@@ -2016,6 +2035,166 @@ def privacy(): return render_template("PRIVACY_POLICY_HTML_TEMPLATE")
 
 
 # ==============================================================================
+# --- Terms of service ---
+# ==============================================================================
+TERMS_UPDATED = "November 6, 2026"
+CONTACT_EMAIL = os.environ.get('CONTACT_EMAIL', 'vbansal639@gmail.com')
+
+
+@app.route('/terms')
+def terms():
+    return render_template("TERMS_HTML_TEMPLATE", terms_updated=TERMS_UPDATED, contact_email=CONTACT_EMAIL)
+
+
+# ==============================================================================
+# --- Testimonials ---
+# Readers send a note (with consent), the admin approves it, and approved notes show on
+# the landing page. Nothing is ever published without review.
+# ==============================================================================
+TESTIMONIAL_LIMITS = {'name': 120, 'attribution': 80, 'quote': 300}
+TESTIMONIAL_MIN_QUOTE = 20
+
+
+def _is_admin():
+    return bool(session.get('is_admin')) and session.get('username') == ADMIN_USERNAME
+
+
+def _read_testimonial_form():
+    """Validate the shared name / attribution / quote fields. Returns (data, error)."""
+    name, err = clean_text(request.form.get('name', ''), TESTIMONIAL_LIMITS['name'])
+    if err:
+        return None, f"Name: {err}"
+    attribution, err = clean_text(request.form.get('attribution', ''), TESTIMONIAL_LIMITS['attribution'], allow_empty=True)
+    if err:
+        return None, f"About you: {err}"
+    quote, err = clean_text(request.form.get('quote', ''), TESTIMONIAL_LIMITS['quote'])
+    if err:
+        return None, f"Note: {err}"
+    if len(quote) < TESTIMONIAL_MIN_QUOTE:
+        return None, f"Please write at least {TESTIMONIAL_MIN_QUOTE} characters."
+    return {'name': name, 'attribution': attribution or None, 'quote': quote}, None
+
+
+@app.route('/share-your-experience', methods=['GET', 'POST'])
+@login_required
+@rate_limit(5, 3600, scope='testimonial', message="You've sent several notes recently. Please try again later.")
+def share_testimonial():
+    user = User.query.get(session['user_id'])
+    if not user:
+        session.clear()
+        return redirect(url_for('login'))
+    mine = user.testimonials.order_by(Testimonial.created_at.desc()).all()
+    has_pending = any(t.status == 'pending' for t in mine)
+    form = {'name': user.name, 'attribution': '', 'quote': ''}
+
+    if request.method == 'POST':
+        data, error = _read_testimonial_form()
+        if has_pending:
+            flash("Your last note is still waiting for review.", "info")
+            return redirect(url_for('share_testimonial'))
+        if not error and request.form.get('consent') != 'yes':
+            error = "Please agree that we may publish your note."
+        if error:
+            flash(error, "warning")
+            form.update({k: request.form.get(k, '') for k in ('name', 'attribution', 'quote')})
+        else:
+            try:
+                db.session.add(Testimonial(user_id=user.id, source='reader', status='pending', **data))
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                app.logger.error(f"Saving testimonial failed for user {user.id}: {e}", exc_info=True)
+                flash("We couldn't save your note. Please try again.", "danger")
+                return redirect(url_for('share_testimonial'))
+            flash("Thanks. Your note is waiting for review and will appear on the website once approved.", "success")
+            return redirect(url_for('share_testimonial'))
+
+    return render_template("SHARE_TESTIMONIAL_HTML_TEMPLATE", mine=mine, has_pending=has_pending,
+                           form=form, limits=TESTIMONIAL_LIMITS)
+
+
+@app.route('/admin/testimonials')
+@login_required
+def admin_testimonials():
+    if not _is_admin():
+        abort(403)
+    rows = (Testimonial.query.options(joinedload(Testimonial.user))
+            .order_by(Testimonial.created_at.desc()).all())
+    groups = {'pending': [], 'approved': [], 'rejected': []}
+    for t in rows:
+        groups.setdefault(t.status, []).append(t)
+    return render_template("ADMIN_TESTIMONIALS_HTML_TEMPLATE", groups=groups, limits=TESTIMONIAL_LIMITS)
+
+
+@app.route('/admin/testimonials/add', methods=['POST'])
+@login_required
+def admin_add_testimonial():
+    if not _is_admin():
+        abort(403)
+    data, error = _read_testimonial_form()
+    if not error and request.form.get('permission') != 'yes':
+        error = "Confirm that the reader gave permission to publish."
+    if error:
+        flash(error, "warning")
+        return redirect(url_for('admin_testimonials'))
+    try:
+        db.session.add(Testimonial(source='admin', status='approved',
+                                   reviewed_at=datetime.now(timezone.utc), **data))
+        db.session.commit()
+        flash("Quote added and published.", "success")
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Admin testimonial add failed: {e}", exc_info=True)
+        flash("Could not add the quote. Please try again.", "danger")
+    return redirect(url_for('admin_testimonials'))
+
+
+@app.route('/admin/testimonials/<int:testimonial_id>/<action>', methods=['POST'])
+@login_required
+def admin_review_testimonial(testimonial_id, action):
+    if not _is_admin():
+        abort(403)
+    if action not in ('approve', 'reject', 'delete'):
+        abort(404)
+    t = Testimonial.query.get_or_404(testimonial_id)
+    try:
+        if action == 'delete':
+            db.session.delete(t)
+            message = "Testimonial deleted."
+        else:
+            t.status = 'approved' if action == 'approve' else 'rejected'
+            t.reviewed_at = datetime.now(timezone.utc)
+            message = "Testimonial approved. It is now on the landing page." if action == 'approve' else "Testimonial hidden from the website."
+        db.session.commit()
+        flash(message, "success")
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Testimonial review failed ({action} {testimonial_id}): {e}", exc_info=True)
+        flash("Could not update the testimonial. Please try again.", "danger")
+    return redirect(url_for('admin_testimonials'))
+
+
+def _landing_testimonials(limit=6):
+    """Approved testimonials for the landing page, newest approval first."""
+    try:
+        rows = (Testimonial.query.options(joinedload(Testimonial.user))
+                .filter_by(status='approved')
+                .order_by(Testimonial.reviewed_at.desc(), Testimonial.created_at.desc())
+                .limit(limit).all())
+    except Exception as e:
+        app.logger.warning(f"Landing page testimonials lookup failed: {e}")
+        return []
+    items = []
+    for t in rows:
+        details = [t.attribution] if t.attribution else []
+        if t.user and t.user.created_at:
+            details.append('Reader since ' + t.user.created_at.strftime('%b %Y'))
+        initials = ''.join(part[0] for part in t.name.split()[:2]).upper() or '?'
+        items.append({'quote': t.quote, 'name': t.name, 'detail': ' · '.join(details), 'initials': initials})
+    return items
+
+
+# ==============================================================================
 # --- Landing page (/welcome) ---
 # The news feed stays at '/'. This page explains the product to new visitors and
 # sends them to the feed. Everything it states is read from the app's own config and
@@ -2174,6 +2353,7 @@ def landing():
         sources_short=', '.join(sources[:3]) if sources else 'major Indian newsrooms',
         source_count_word=_NUMBER_WORDS[len(sources)] if len(sources) < len(_NUMBER_WORDS) else str(len(sources)),
         sample_story=_landing_sample_story(),
+        testimonials=_landing_testimonials(),
         weekly_summaries=weekly if weekly >= LANDING_STAT_MIN else None,
         tagline=LANDING_TAGLINE,
         faqs=faqs,
@@ -2345,7 +2525,7 @@ def sitemap():
 
     add(url_for('index', _external=True), 'hourly', '1.0')
     add(url_for('landing', _external=True), 'weekly', '0.6')
-    for endpoint in ('about', 'contact', 'privacy'):
+    for endpoint in ('about', 'contact', 'privacy', 'terms'):
         add(url_for(endpoint, _external=True), 'monthly', '0.4')
     for category in app.config['CATEGORIES']:
         add(url_for('index', category_name=category, page=1, _external=True), 'hourly', '0.8')
@@ -2650,6 +2830,13 @@ def export_my_data():
                 "content": c.content,
                 "timestamp": c.timestamp.isoformat() if c.timestamp else None,
             } for c in user.comments],
+            "testimonials": [{
+                "name": t.name,
+                "attribution": t.attribution,
+                "quote": t.quote,
+                "status": t.status,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            } for t in user.testimonials],
             "bookmarks": [{
                 "title": b.title_cache,
                 "source": b.source_name_cache,
@@ -2982,15 +3169,16 @@ BASE_HTML_TEMPLATE = """
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 
-    {# Two families only, one request, display=swap so text paints immediately in a fallback. #}
-    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+    {# One typeface for the whole site (Geist), upright only, display=swap so text paints immediately. #}
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap">
 
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 
-    {# Font Awesome is decorative only -- load it without blocking first paint. #}
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" media="print" onload="this.media='all';this.onload=null;">
-    <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"></noscript>
+    {# Phosphor icons (regular + fill). Decorative only, so they load without blocking first paint. #}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.2/src/regular/style.css" media="print" onload="this.media='all';this.onload=null;">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.2/src/fill/style.css" media="print" onload="this.media='all';this.onload=null;">
+    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.2/src/regular/style.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.2/src/fill/style.css"></noscript>
 
     <style>
         /* ==========================================================================
@@ -3019,14 +3207,15 @@ BASE_HTML_TEMPLATE = """
             --border-radius-xs: 0.375rem; --border-radius-sm: 0.55rem; --border-radius-md: 0.85rem;
             --border-radius-lg: 1.15rem; --border-radius-pill: 999px;
 
-            --font-display: 'Instrument Serif', 'Iowan Old Style', Georgia, serif;
-            --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+            --font-display: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+            --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
             --font-body: var(--font-sans);
             --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
 
-            --text-xs: 0.72rem; --text-sm: 0.82rem; --text-base: 1rem; --text-md: 1.06rem;
-            --text-lg: 1.16rem; --text-xl: 1.4rem; --text-2xl: 1.8rem;
-            --text-3xl: clamp(2.1rem, 4.6vw, 3rem); --text-4xl: clamp(2.5rem, 6vw, 3.75rem);
+            /* Tailwind type scale only: 12 14 16 18 20 24 30 36 48 60 */
+            --text-xs: 0.75rem; --text-sm: 0.875rem; --text-base: 1rem; --text-md: 1rem;
+            --text-lg: 1.125rem; --text-xl: 1.25rem; --text-2xl: 1.5rem;
+            --text-3xl: 1.875rem; --text-4xl: 2.25rem;
 
             --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem; --space-4: 1rem; --space-5: 1.5rem; --space-6: 2rem; --space-7: 3rem;
 
@@ -3037,6 +3226,18 @@ BASE_HTML_TEMPLATE = """
 
             --skeleton-base: #ECEAE5; --skeleton-sheen: #F8F7F4;
         }
+        @media (min-width: 992px) { :root { --text-3xl: 3rem; --text-4xl: 3.75rem; } }
+        em, i, cite, blockquote, address { font-style: normal; }
+        .ph, .ph-fill { line-height: 1; vertical-align: -0.125em; }
+        .ph-spin { display: inline-block; animation: ph-spin 900ms cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+        @keyframes ph-spin { to { transform: rotate(360deg); } }
+        /* Bootstrap's muted text keeps its light theme grey unless told otherwise. */
+        body.dark-mode { --bs-secondary-color: var(--text-muted-color); --bs-secondary-color-rgb: var(--text-muted-color-rgb); }
+        .testimonial-form-wrap { max-width: 720px; margin-inline: auto; }
+        .testimonial-mine { padding: 0.75rem 1rem; border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); background: var(--light-bg); }
+        .testimonial-status { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-muted-color); }
+        .testimonial-status-approved { color: var(--secondary-color); }
+        .was-validated .form-control:invalid ~ .d-flex .d-block-when-invalid { display: block; }
         body.dark-mode {
             --primary-color: #8B82FF; --primary-light: #ADA4FF; --primary-dark: #6D5FF7;
             --secondary-color: #2DD4BF; --secondary-light: #5EEAD4; --accent-color: #FB923C;
@@ -3099,8 +3300,8 @@ BASE_HTML_TEMPLATE = """
         .profile-header-card h1,
         .state-card-title {
             font-family: var(--font-display);
-            font-weight: 400;
-            letter-spacing: -0.01em;
+            font-weight: 600;
+            letter-spacing: -0.02em;
             line-height: 1.12;
         }
 
@@ -3134,7 +3335,7 @@ BASE_HTML_TEMPLATE = """
         /* ==========================================================================
            BUTTONS
            ========================================================================== */
-        .btn { border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.9rem; letter-spacing: -0.005em; transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring), color var(--duration-base) var(--ease-standard); }
+        .btn { border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.875rem; letter-spacing: -0.005em; transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring), color var(--duration-base) var(--ease-standard); }
         .btn:hover { transform: translateY(-1px); }
         .btn:active { transform: translateY(0) scale(0.975); }
         .btn-primary { --bs-btn-bg: var(--primary-color); --bs-btn-border-color: var(--primary-color); --bs-btn-hover-bg: var(--primary-dark); --bs-btn-hover-border-color: var(--primary-dark); --bs-btn-active-bg: var(--primary-dark); --bs-btn-active-border-color: var(--primary-dark); --bs-btn-focus-shadow-rgb: var(--primary-color-rgb); }
@@ -3147,8 +3348,8 @@ BASE_HTML_TEMPLATE = """
         .btn-danger { --bs-btn-bg: #DC2626; --bs-btn-border-color: #DC2626; --bs-btn-hover-bg: #B91C1C; --bs-btn-hover-border-color: #B91C1C; }
         .btn .spinner-border { vertical-align: -0.15em; }
         /* Arrow nudge on hover. */
-        .btn i.fa-arrow-right, .btn i.fa-chevron-right, .read-more i, .read-more-btn i { transition: transform var(--duration-base) var(--ease-spring); }
-        .btn:hover i.fa-arrow-right, .btn:hover i.fa-chevron-right, .read-more:hover i, .read-more-btn:hover i { transform: translateX(4px); }
+        .btn i.ph-arrow-right, .btn i.ph-caret-right, .read-more i, .read-more-btn i { transition: transform var(--duration-base) var(--ease-spring); }
+        .btn:hover i.ph-arrow-right, .btn:hover i.ph-caret-right, .read-more:hover i, .read-more-btn:hover i { transform: translateX(4px); }
 
         /* ==========================================================================
            FORMS
@@ -3164,7 +3365,7 @@ BASE_HTML_TEMPLATE = """
         #alert-placeholder { position: fixed; top: 98px; left: 50%; transform: translateX(-50%); z-index: 2050; display: flex; flex-direction: column; align-items: stretch; gap: 0.6rem; width: min(92vw, 420px); pointer-events: none; }
         #alert-placeholder .alert { pointer-events: auto; position: relative; margin: 0; width: 100%; text-align: left; box-shadow: var(--shadow-lg); border-radius: var(--border-radius-md); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); display: flex; align-items: flex-start; gap: 0.65rem; padding: 0.9rem 2.6rem 0.9rem 1rem; animation: toastIn var(--duration-slow) var(--ease-spring) both; }
         @keyframes toastIn { from { opacity: 0; transform: translateY(-16px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
-        #alert-placeholder .alert .alert-icon { font-size: 1.05rem; margin-top: 0.15rem; flex-shrink: 0; }
+        #alert-placeholder .alert .alert-icon { font-size: 1rem; margin-top: 0.15rem; flex-shrink: 0; }
         #alert-placeholder .alert.alert-success .alert-icon { color: var(--secondary-color); }
         #alert-placeholder .alert.alert-danger .alert-icon { color: #DC2626; }
         #alert-placeholder .alert.alert-warning .alert-icon { color: #D97706; }
@@ -3191,22 +3392,22 @@ BASE_HTML_TEMPLATE = """
         .navbar-left { flex-shrink: 0; }
         .navbar-center { flex-grow: 1; min-width: 150px; max-width: 540px; }
         .navbar-right { flex-shrink: 0; }
-        .navbar-brand-custom { color: #fff !important; font-weight: 800; font-size: 1.45rem; font-family: var(--font-sans); display: flex; align-items: center; gap: 9px; text-decoration: none !important; letter-spacing: -0.035em; }
-        .navbar-brand-custom .brand-icon { color: var(--secondary-light); font-size: 1.2rem; transition: transform var(--duration-base) var(--ease-spring); }
+        .navbar-brand-custom { color: #fff !important; font-weight: 700; font-size: 1.25rem; font-family: var(--font-sans); display: flex; align-items: center; gap: 9px; text-decoration: none !important; letter-spacing: -0.035em; }
+        .navbar-brand-custom .brand-icon { color: var(--secondary-light); font-size: 1.125rem; transition: transform var(--duration-base) var(--ease-spring); }
         .navbar-brand-custom:hover .brand-icon { transform: rotate(-12deg) scale(1.12); }
 
         .search-container { position: relative; width: 100%; }
-        .navbar-search { width: 100%; border-radius: var(--border-radius-pill); padding: 0.58rem 2.6rem 0.58rem 2.75rem; border: 1px solid rgba(255,255,255,0.13); font-size: 0.9rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard); background: rgba(255,255,255,0.07); color: #fff; }
+        .navbar-search { width: 100%; border-radius: var(--border-radius-pill); padding: 0.58rem 2.6rem 0.58rem 2.75rem; border: 1px solid rgba(255,255,255,0.13); font-size: 0.875rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard); background: rgba(255,255,255,0.07); color: #fff; }
         .navbar-search::placeholder { color: rgba(255,255,255,0.5); }
         .navbar-search:focus { background: rgba(255,255,255,0.12); box-shadow: 0 0 0 3.5px rgba(var(--primary-color-rgb), 0.4); border-color: var(--primary-light); outline: none; color: #fff; }
-        .search-icon { color: rgba(255,255,255,0.55); transition: color var(--duration-base) var(--ease-standard); left: 1.05rem; position: absolute; top: 50%; transform: translateY(-50%); font-size: 0.85rem; pointer-events: none; }
+        .search-icon { color: rgba(255,255,255,0.55); transition: color var(--duration-base) var(--ease-standard); left: 1.05rem; position: absolute; top: 50%; transform: translateY(-50%); font-size: 0.75rem; pointer-events: none; }
         .search-container:focus-within .search-icon { color: var(--primary-light); }
-        .search-clear-btn { position: absolute; right: 0.45rem; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255,255,255,0.5); width: 28px; height: 28px; border-radius: 50%; display: none; align-items: center; justify-content: center; font-size: 0.8rem; transition: color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }
+        .search-clear-btn { position: absolute; right: 0.45rem; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255,255,255,0.5); width: 28px; height: 28px; border-radius: 50%; display: none; align-items: center; justify-content: center; font-size: 0.75rem; transition: color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }
         .search-clear-btn:hover { color: #fff; background: rgba(255,255,255,0.14); }
         .search-container.has-value .search-clear-btn { display: flex; }
 
         .header-controls { display: flex; gap: 0.8rem; align-items: center; }
-        .header-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); padding: 0.5rem 1rem; border-radius: var(--border-radius-pill); color: #fff; font-weight: 600; transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); display: flex; align-items: center; gap: 0.5rem; cursor: pointer; text-decoration: none; font-size: 0.86rem; }
+        .header-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); padding: 0.5rem 1rem; border-radius: var(--border-radius-pill); color: #fff; font-weight: 600; transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); display: flex; align-items: center; gap: 0.5rem; cursor: pointer; text-decoration: none; font-size: 0.75rem; }
         .header-btn:hover { background: var(--primary-color); border-color: var(--primary-color); color: #fff; transform: translateY(-1px); }
         .header-btn:active { transform: scale(0.96); }
 
@@ -3220,10 +3421,10 @@ BASE_HTML_TEMPLATE = """
         .offcanvas-body { padding: 1.5rem; }
         .offcanvas-header .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
         .sidebar-section { margin-bottom: 1.5rem; }
-        .sidebar-heading { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--text-muted-color); margin-bottom: 0.75rem; font-weight: 700; }
+        .sidebar-heading { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--text-muted-color); margin-bottom: 0.75rem; font-weight: 700; }
         .sidebar-btn { display: flex; align-items: center; padding: 0.75rem 1rem; width: 100%; text-align: left; background-color: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); color: #fff; text-decoration: none; border-radius: var(--border-radius-md); transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
         .sidebar-btn:hover { background-color: rgba(255,255,255,0.09); border-color: var(--primary-light); color: #fff; transform: translateX(2px); }
-        .sidebar-avatar { width: 40px; height: 40px; border-radius: 50%; background-image: linear-gradient(135deg, var(--primary-light), var(--secondary-color)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.15rem; flex-shrink: 0; }
+        .sidebar-avatar { width: 40px; height: 40px; border-radius: 50%; background-image: linear-gradient(135deg, var(--primary-light), var(--secondary-color)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.125rem; flex-shrink: 0; }
         .offcanvas .dropdown-toggle, .offcanvas .dropdown-toggle::after { color: #fff; }
         .offcanvas .dropdown-menu { background-color: #1C1D25; border-color: #2E2F3A; border-radius: var(--border-radius-md); }
         .offcanvas .dropdown-item { color: var(--footer-text); border-radius: var(--border-radius-sm); transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard); }
@@ -3240,7 +3441,7 @@ BASE_HTML_TEMPLATE = """
            TABS
            ========================================================================== */
         .nav-tabs { border-bottom: 1px solid var(--card-border-color); gap: 0.4rem; }
-        .nav-tabs .nav-link { border: none; background: transparent; color: var(--text-muted-color); font-weight: 700; font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.9rem 0.6rem; border-radius: 0; position: relative; transition: color var(--duration-base) var(--ease-standard); }
+        .nav-tabs .nav-link { border: none; background: transparent; color: var(--text-muted-color); font-weight: 700; font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.9rem 0.6rem; border-radius: 0; position: relative; transition: color var(--duration-base) var(--ease-standard); }
         .nav-tabs .nav-link::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background-image: linear-gradient(90deg, var(--primary-color), var(--secondary-color)); transform: scaleX(0); transition: transform var(--duration-base) var(--ease-premium); }
         .nav-tabs .nav-link.active { color: var(--text-color); background: transparent; }
         .nav-tabs .nav-link.active::after { transform: scaleX(1); }
@@ -3263,7 +3464,7 @@ BASE_HTML_TEMPLATE = """
         .article-image.is-loaded { opacity: 1; }
         .img-fallback .article-image { display: none; }
         .article-card:hover .article-image { transform: scale(1.06); }
-        .img-fallback-icon { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; font-size: 1.75rem; color: var(--card-border-color); }
+        .img-fallback-icon { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; font-size: 1.5rem; color: var(--card-border-color); }
         .img-fallback .img-fallback-icon { display: flex; }
 
         .article-body { padding: 1.35rem 1.4rem 1.4rem; flex-grow: 1; display: flex; flex-direction: column; position: relative; z-index: 1; }
@@ -3271,10 +3472,10 @@ BASE_HTML_TEMPLATE = """
         .article-title a { color: var(--text-color); text-decoration: none; transition: color var(--duration-fast) var(--ease-standard); }
         .article-card:hover .article-title a { color: var(--primary-color) !important; }
         .article-meta { display: flex; align-items: center; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.35rem 0.45rem; }
-        .meta-item { display: flex; align-items: center; font-family: var(--font-sans); font-size: 0.66rem; color: var(--text-muted-color); background: var(--light-bg); border: 1px solid var(--card-border-color); padding: 0.22rem 0.6rem; border-radius: var(--border-radius-pill); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; }
+        .meta-item { display: flex; align-items: center; font-family: var(--font-sans); font-size: 0.75rem; color: var(--text-muted-color); background: var(--light-bg); border: 1px solid var(--card-border-color); padding: 0.22rem 0.6rem; border-radius: var(--border-radius-pill); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; }
         .meta-item i { font-size: 0.75rem; margin-right: 0.35rem; color: var(--secondary-color); }
-        .article-description { color: var(--text-muted-color); margin-bottom: 1.15rem; font-size: 0.9rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-        .read-more { margin-top: auto; background: var(--text-color); color: var(--card-bg) !important; border: none; padding: 0.62rem 0; border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.84rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); width: 100%; text-align: center; text-decoration: none; display: inline-block; }
+        .article-description { color: var(--text-muted-color); margin-bottom: 1.15rem; font-size: 0.875rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+        .read-more { margin-top: auto; background: var(--text-color); color: var(--card-bg) !important; border: none; padding: 0.62rem 0; border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.75rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); width: 100%; text-align: center; text-decoration: none; display: inline-block; }
         .read-more:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff !important; box-shadow: var(--shadow-glow); }
         .read-more:active { transform: scale(0.98); }
 
@@ -3285,7 +3486,7 @@ BASE_HTML_TEMPLATE = """
            PAGINATION
            ========================================================================== */
         .pagination { flex-wrap: wrap; }
-        .page-item .page-link { border-radius: var(--border-radius-sm); width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; color: var(--text-muted-color); background-color: var(--card-bg); border: 1px solid var(--card-border-color); font-weight: 700; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); font-size: 0.86rem; margin: 0 0.2rem; }
+        .page-item .page-link { border-radius: var(--border-radius-sm); width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; color: var(--text-muted-color); background-color: var(--card-bg); border: 1px solid var(--card-border-color); font-weight: 700; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); font-size: 0.75rem; margin: 0 0.2rem; }
         .page-item .page-link:hover { border-color: var(--primary-color); color: var(--primary-color); transform: translateY(-2px); }
         .page-item.active .page-link { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); border-color: transparent; color: #fff; }
         .page-item.disabled .page-link { color: var(--text-muted-color); pointer-events: none; background-color: var(--light-bg); opacity: 0.55; }
@@ -3294,10 +3495,10 @@ BASE_HTML_TEMPLATE = """
         /* ==========================================================================
            FOOTER
            ========================================================================== */
-        footer { background: var(--footer-bg); color: var(--footer-text); margin-top: auto; padding: 3.5rem 0 1.5rem; font-size: 0.9rem; position: relative; }
+        footer { background: var(--footer-bg); color: var(--footer-text); margin-top: auto; padding: 3.5rem 0 1.5rem; font-size: 0.875rem; position: relative; }
         footer::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(var(--secondary-color-rgb), 0.55), rgba(var(--primary-color-rgb), 0.55), transparent); }
         .footer-content.row { display: flex; flex-wrap: wrap; }
-        .footer-section h5 { color: #fff; margin-bottom: 1.2rem; font-weight: 700; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.13em; }
+        .footer-section h5 { color: #fff; margin-bottom: 1.2rem; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.13em; }
         .footer-links { display: flex; flex-direction: column; gap: 0.8rem; }
         .footer-links a { color: var(--footer-text); text-decoration: none; transition: color var(--duration-base) var(--ease-standard), padding-left var(--duration-base) var(--ease-premium); }
         .footer-links a:hover { color: var(--footer-link-hover); padding-left: 6px; }
@@ -3307,8 +3508,8 @@ BASE_HTML_TEMPLATE = """
         .footer-newsletter-input { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #fff; }
         .footer-newsletter-input::placeholder { color: rgba(255,255,255,0.5); }
         .footer-newsletter-input:focus { background: rgba(255,255,255,0.1); border-color: var(--primary-light); box-shadow: 0 0 0 3px rgba(var(--primary-color-rgb), 0.4); color: #fff; }
-        .copyright { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.4rem 1.25rem; text-align: center; padding-top: 2rem; margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.8rem; color: var(--text-muted-color); width: 100%; }
-        .back-to-top-link { color: var(--footer-text); background: none; border: none; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 0.35rem; transition: color var(--duration-base) var(--ease-standard); }
+        .copyright { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.4rem 1.25rem; text-align: center; padding-top: 2rem; margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.75rem; color: var(--text-muted-color); width: 100%; }
+        .back-to-top-link { color: var(--footer-text); background: none; border: none; font-size: 0.75rem; display: inline-flex; align-items: center; gap: 0.35rem; transition: color var(--duration-base) var(--ease-standard); }
         .back-to-top-link:hover { color: var(--secondary-light); }
 
         /* ==========================================================================
@@ -3317,7 +3518,7 @@ BASE_HTML_TEMPLATE = """
         .modal-content { border-radius: var(--border-radius-lg); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); box-shadow: var(--shadow-lg); }
         body.dark-mode .modal-header .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
         .admin-controls { position: fixed; bottom: 25px; right: 25px; z-index: 1030; }
-        .add-article-btn { width: 56px; height: 56px; border-radius: var(--border-radius-md); color: #fff; border: none; display: flex; align-items: center; justify-content: center; font-size: 20px; cursor: pointer; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); box-shadow: var(--shadow-lg); transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-spring), filter var(--duration-base) var(--ease-standard); }
+        .add-article-btn { width: 56px; height: 56px; border-radius: var(--border-radius-md); color: #fff; border: none; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; cursor: pointer; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); box-shadow: var(--shadow-lg); transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-spring), filter var(--duration-base) var(--ease-standard); }
         .add-article-btn:hover { filter: brightness(1.08); transform: translateY(-4px) scale(1.04); box-shadow: var(--shadow-glow); }
         .add-article-btn:active { transform: translateY(-1px) scale(0.96); }
 
@@ -3327,11 +3528,11 @@ BASE_HTML_TEMPLATE = """
         .page-header-static { background-color: var(--card-bg); background-image: var(--surface-gradient); border-radius: var(--border-radius-lg); padding: clamp(2rem, 5vw, 3.25rem); margin-bottom: 2rem; text-align: center; border: 1px solid var(--card-border-color); position: relative; overflow: hidden; }
         .page-header-static::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background-image: linear-gradient(90deg, var(--primary-color), var(--secondary-color)); }
         .page-header-static h1 { color: var(--text-color); font-size: var(--text-4xl); margin: 0; }
-        .static-content-container { background-color: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 5vw, 3rem); font-size: 1.03rem; line-height: 1.8; box-shadow: var(--shadow-sm); }
+        .static-content-container { background-color: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 5vw, 3rem); font-size: 1rem; line-height: 1.8; box-shadow: var(--shadow-sm); }
         .static-content-container h2 { font-family: var(--font-sans); font-weight: 700; color: var(--text-color); border-bottom: 2px solid var(--secondary-color); padding-bottom: 0.5rem; margin-top: 2.5rem; margin-bottom: 1.5rem; display: inline-block; font-size: var(--text-xl); }
         .static-content-container h2 .icon { margin-right: 0.75rem; color: var(--primary-color); }
         .static-content-container p, .static-content-container li { max-width: 68ch; }
-        .static-content-container p.lead { font-family: var(--font-display); font-weight: 400; font-size: 1.4rem; line-height: 1.4; color: var(--text-color); max-width: 40ch; }
+        .static-content-container p.lead { font-family: var(--font-display); font-weight: 400; font-size: 1.25rem; line-height: 1.4; color: var(--text-color); max-width: 40ch; }
         .static-content-container ul { padding-left: 25px; }
         .static-content-container li { margin-bottom: 0.5rem; }
         .contact-card { background-color: var(--light-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); padding: 1.75rem 1.5rem; height: 100%; text-align: center; transition: transform var(--duration-base) var(--ease-premium), box-shadow var(--duration-base) var(--ease-premium), border-color var(--duration-base) var(--ease-standard); }
@@ -3347,7 +3548,7 @@ BASE_HTML_TEMPLATE = """
            ========================================================================== */
         .auth-card { max-width: 440px; margin: 3rem auto; background: var(--card-bg); border-radius: var(--border-radius-lg); box-shadow: var(--shadow-lg); border: 1px solid var(--card-border-color); overflow: hidden; }
         .auth-header { padding: 2.25rem 2rem 2rem; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-dark)); text-align: center; }
-        .auth-header .icon { font-size: 2rem; color: #fff; width: 64px; height: 64px; margin: 0 auto; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.16); border-radius: 50%; }
+        .auth-header .icon { font-size: 1.875rem; color: #fff; width: 64px; height: 64px; margin: 0 auto; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.16); border-radius: 50%; }
         .auth-header h1 { font-size: var(--text-2xl); color: #fff; margin-top: 1rem; margin-bottom: 0; }
         .auth-body { padding: 2rem 2.25rem; }
         .input-group-icon { position: relative; }
@@ -3363,16 +3564,16 @@ BASE_HTML_TEMPLATE = """
         .profile-header-card { background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: 2rem; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; align-items: center; text-align: center; position: relative; overflow: hidden; }
         .profile-header-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 96px; background-image: linear-gradient(135deg, rgba(var(--primary-color-rgb), 0.16), rgba(var(--secondary-color-rgb), 0.10)); }
         .profile-avatar-wrapper { position: relative; margin-bottom: 1rem; z-index: 1; }
-        .profile-avatar { width: 116px; height: 116px; border-radius: 50%; background-image: linear-gradient(150deg, var(--primary-light), var(--primary-dark)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 3.2rem; font-family: var(--font-sans); border: 5px solid var(--card-bg); box-shadow: var(--shadow-md); }
+        .profile-avatar { width: 116px; height: 116px; border-radius: 50%; background-image: linear-gradient(150deg, var(--primary-light), var(--primary-dark)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 3rem; font-family: var(--font-sans); border: 5px solid var(--card-bg); box-shadow: var(--shadow-md); }
         .profile-header-card h1 { margin-bottom: 0.25rem; font-size: var(--text-3xl); position: relative; z-index: 1; }
         .profile-header-card .username { color: var(--text-muted-color); font-weight: 600; margin-bottom: 1rem; }
         .profile-stats { display: flex; gap: 1.5rem; margin-top: 1.5rem; border-top: 1px solid var(--card-border-color); padding-top: 1.5rem; width: 100%; justify-content: center; }
         .stat-item { text-align: center; background: none; border: none; padding: 0.4rem 1rem; border-radius: var(--border-radius-md); transition: background-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
         button.stat-item { cursor: pointer; }
         button.stat-item:hover { background-color: var(--light-bg); transform: translateY(-2px); }
-        .stat-item .icon { font-size: 1.4rem; color: var(--secondary-color); margin-bottom: 0.5rem; }
-        .stat-item .count { font-size: 1.3rem; font-weight: 800; color: var(--text-color); letter-spacing: -0.03em; }
-        .stat-item .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; color: var(--text-muted-color); }
+        .stat-item .icon { font-size: 1.25rem; color: var(--secondary-color); margin-bottom: 0.5rem; }
+        .stat-item .count { font-size: 1.25rem; font-weight: 700; color: var(--text-color); letter-spacing: -0.03em; }
+        .stat-item .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; color: var(--text-muted-color); }
         .profile-tabs .nav-link { padding: 0.75rem 1rem; }
 
         /* ==========================================================================
@@ -3381,8 +3582,8 @@ BASE_HTML_TEMPLATE = """
         .state-card { background-color: var(--card-bg); background-image: var(--surface-gradient); border-radius: var(--border-radius-lg); text-align: center; padding: clamp(2.25rem, 6vw, 3.5rem) 2rem; border: 1px dashed var(--card-border-color); }
         .state-card.state-card-narrow { max-width: 600px; margin-left: auto; margin-right: auto; }
         .state-card.state-card-solid { border-style: solid; box-shadow: var(--shadow-sm); }
-        .state-card-icon { width: 72px; height: 72px; border-radius: 50%; background-image: linear-gradient(140deg, rgba(var(--primary-color-rgb), 0.16), rgba(var(--secondary-color-rgb), 0.10)); color: var(--primary-color); display: inline-flex; align-items: center; justify-content: center; font-size: 1.6rem; margin-bottom: 1.25rem; }
-        .state-card-icon.state-card-icon-sm { width: 52px; height: 52px; font-size: 1.1rem; margin-bottom: 0.85rem; }
+        .state-card-icon { width: 72px; height: 72px; border-radius: 50%; background-image: linear-gradient(140deg, rgba(var(--primary-color-rgb), 0.16), rgba(var(--secondary-color-rgb), 0.10)); color: var(--primary-color); display: inline-flex; align-items: center; justify-content: center; font-size: 1.5rem; margin-bottom: 1.25rem; }
+        .state-card-icon.state-card-icon-sm { width: 52px; height: 52px; font-size: 1rem; margin-bottom: 0.85rem; }
         .state-card.state-card-danger .state-card-icon { background-image: linear-gradient(140deg, rgba(220, 38, 38, 0.18), rgba(220, 38, 38, 0.08)); color: #DC2626; }
         .state-card-title { font-size: var(--text-2xl); margin-bottom: 0.5rem; }
         .state-card-text { color: var(--text-muted-color); max-width: 46ch; margin: 0 auto; }
@@ -3394,20 +3595,20 @@ BASE_HTML_TEMPLATE = """
         .bookmark-btn { background: none; border: none; font-size: 1.5rem; color: var(--text-muted-color); cursor: pointer; padding: 0.25rem 0.5rem; transition: color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); vertical-align: middle; border-radius: 50%; }
         .bookmark-btn.active { color: var(--bookmark-active-color); transform: scale(1.1); }
         .bookmark-btn:hover { color: var(--secondary-light); transform: scale(1.12); }
-        .article-card .bookmark-btn { font-size: 1.2rem; position: relative; z-index: 2; }
+        .article-card .bookmark-btn { font-size: 1.125rem; position: relative; z-index: 2; }
 
         /* ==========================================================================
            AI SUMMARY / TAKEAWAYS / SKELETON
            ========================================================================== */
         .summary-box, .takeaways-box { background-color: var(--card-bg); background-image: var(--surface-gradient); border: 1px solid rgba(var(--primary-color-rgb), 0.16); border-radius: var(--border-radius-md); margin: 1.6rem 0; padding: 1.5rem 1.65rem; }
-        .summary-box h2, .takeaways-box h2 { font-family: var(--font-sans); font-weight: 800; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--primary-color); margin-bottom: 0.75rem; }
-        .summary-box p { font-size: 1.12rem; line-height: 1.6; max-width: 62ch; margin: 0; }
+        .summary-box h2, .takeaways-box h2 { font-family: var(--font-sans); font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--primary-color); margin-bottom: 0.75rem; }
+        .summary-box p { font-size: 1rem; line-height: 1.6; max-width: 62ch; margin: 0; }
         .takeaways-box { border-left: 3px solid var(--secondary-color); }
         .takeaways-box h2 { color: var(--secondary-color); }
         .takeaways-box ul { margin: 0; padding-left: 1.15rem; }
         .takeaways-box li { margin-bottom: 0.45rem; }
         .takeaways-box li:last-child { margin-bottom: 0; }
-        .content-text { white-space: pre-wrap; line-height: 1.8; font-size: 1.07rem; color: var(--text-color); max-width: 70ch; }
+        .content-text { white-space: pre-wrap; line-height: 1.8; font-size: 1rem; color: var(--text-color); max-width: 70ch; }
         .content-divider-heading { font-size: var(--text-xl); margin: 0 0 1rem; }
         .comment-login-prompt { text-align: center; margin-top: 1.5rem; padding: 1.75rem; background: var(--light-bg); border-radius: var(--border-radius-md); border: 1px solid var(--card-border-color); }
         .comment-login-prompt i { font-size: 1.5rem; color: var(--text-muted-color); margin-bottom: 0.5rem; display: block; }
@@ -3429,8 +3630,8 @@ BASE_HTML_TEMPLATE = """
         .hero-image-wrap.img-fallback .hero-image { display: none; }
         .hero-image-wrap .img-fallback-icon { font-size: 2.25rem; }
         .article-full-content-wrapper { padding: clamp(1.25rem, 4vw, 3rem); margin: 1rem auto 2rem; max-width: 860px; box-shadow: var(--shadow-md); }
-        .article-title-main { font-size: clamp(2.1rem, 5vw, 3.1rem); color: var(--text-color); margin-bottom: 0.75rem; }
-        .article-meta-detailed .meta-item { font-size: 0.68rem; }
+        .article-title-main { font-size: var(--text-3xl); color: var(--text-color); margin-bottom: 0.75rem; }
+        .article-meta-detailed .meta-item { font-size: 0.75rem; }
 
         /* ==========================================================================
            COMMENTS
@@ -3445,25 +3646,25 @@ BASE_HTML_TEMPLATE = """
         .comment-replies:empty { display: none; margin: 0; padding: 0; border: 0; }
         .comment-replies > .comment-thread + .comment-thread { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px dashed var(--card-border-color); }
         .comment-avatar { width: 44px; height: 44px; border-radius: 50%; background-image: linear-gradient(140deg, var(--primary-light), var(--primary-dark)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; flex-shrink: 0; box-shadow: var(--shadow-sm); }
-        .comment-replies .comment-avatar { width: 38px; height: 38px; font-size: 0.9rem; }
+        .comment-replies .comment-avatar { width: 38px; height: 38px; font-size: 0.875rem; }
         .comment-body { flex-grow: 1; min-width: 0; }
         .comment-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.25rem; }
         .comment-author { font-weight: 700; color: var(--text-color); }
-        .comment-date { font-size: 0.78rem; color: var(--text-muted-color); }
+        .comment-date { font-size: 0.75rem; color: var(--text-muted-color); }
         .comment-content { word-wrap: break-word; }
         .comment-actions { position: relative; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; }
-        .comment-actions button { background: none; border: none; color: var(--text-muted-color); padding: 0.28rem 0.6rem; border-radius: var(--border-radius-pill); font-size: 0.82rem; font-weight: 600; display: flex; align-items: center; gap: 0.3rem; transition: color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }
+        .comment-actions button { background: none; border: none; color: var(--text-muted-color); padding: 0.28rem 0.6rem; border-radius: var(--border-radius-pill); font-size: 0.75rem; font-weight: 600; display: flex; align-items: center; gap: 0.3rem; transition: color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }
         .comment-actions button:hover { color: var(--primary-color); background-color: rgba(var(--primary-color-rgb), 0.1); }
         .react-btn { position: relative; }
         .reaction-box { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 8px; background-color: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-pill); padding: 4px 8px; box-shadow: var(--shadow-lg); z-index: 10; white-space: nowrap; animation: fadeInUp 0.22s var(--ease-spring); }
         .reaction-box.show { display: flex; gap: 2px; }
-        .reaction-emoji { font-size: 1.3rem; cursor: pointer; transition: transform 0.18s var(--ease-spring), background-color var(--duration-fast) var(--ease-standard); padding: 4px; background: none; border: none; border-radius: 50%; line-height: 1; }
+        .reaction-emoji { font-size: 1.25rem; cursor: pointer; transition: transform 0.18s var(--ease-spring), background-color var(--duration-fast) var(--ease-standard); padding: 4px; background: none; border: none; border-radius: 50%; line-height: 1; }
         .reaction-emoji:hover { transform: scale(1.3) translateY(-2px); }
         .reaction-emoji.is-selected { background-color: rgba(var(--primary-color-rgb), 0.16); box-shadow: inset 0 0 0 1.5px rgba(var(--primary-color-rgb), 0.5); }
         .reaction-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-        .reaction-pill { display: flex; align-items: center; background-color: rgba(var(--primary-color-rgb), 0.08); border: 1px solid transparent; border-radius: var(--border-radius-pill); padding: 2px 9px; font-size: 0.78rem; font-weight: 600; cursor: default; transition: background-color var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard); }
+        .reaction-pill { display: flex; align-items: center; background-color: rgba(var(--primary-color-rgb), 0.08); border: 1px solid transparent; border-radius: var(--border-radius-pill); padding: 2px 9px; font-size: 0.75rem; font-weight: 600; cursor: default; transition: background-color var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard); }
         .reaction-pill.user-reacted { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; }
-        .reaction-pill .emoji { font-size: 0.9rem; margin-right: 4px; }
+        .reaction-pill .emoji { font-size: 0.875rem; margin-right: 4px; }
         .reply-form-container, .edit-form-container { padding: 1rem; border-radius: var(--border-radius-md); margin-top: 0.75rem; background-color: var(--light-bg); border: 1px solid var(--card-border-color); display: none; }
 
         /* ==========================================================================
@@ -3471,12 +3672,12 @@ BASE_HTML_TEMPLATE = """
            ========================================================================== */
         .community-hub-header { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; background-color: var(--card-bg); background-image: linear-gradient(135deg, rgba(var(--primary-color-rgb),0.09), rgba(var(--secondary-color-rgb),0.06)); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 2rem; }
         .community-hub-header-text { max-width: 640px; }
-        .community-hub-header h1 { font-family: var(--font-display); font-weight: 400; font-size: var(--text-3xl); margin: 0.4rem 0 0.6rem; }
+        .community-hub-header h1 { font-family: var(--font-display); font-weight: 600; font-size: var(--text-3xl); margin: 0.4rem 0 0.6rem; }
         .community-hub-sub { color: var(--text-muted-color); margin: 0; max-width: 58ch; }
         .community-hub-cta { flex-shrink: 0; white-space: nowrap; }
         .list-page-header { margin-bottom: 1.75rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--card-border-color); }
         .list-page-header .eyebrow { display: block; margin-bottom: 0.45rem; }
-        .list-page-header h1 { margin: 0; font-family: var(--font-display); font-weight: 400; font-size: var(--text-3xl); }
+        .list-page-header h1 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: var(--text-3xl); }
 
         /* ==========================================================================
            FEATURED STORY (parallax layer) + AI SYNTHESIS
@@ -3490,18 +3691,18 @@ BASE_HTML_TEMPLATE = """
         .featured-story-content h2 { font-size: var(--text-3xl); margin: 1rem 0; }
         .featured-story-content h2 a { color: var(--text-color); text-decoration: none; transition: color var(--duration-base) var(--ease-standard); }
         .featured-story-content h2 a:hover { color: var(--primary-color); }
-        .featured-story-content .description { font-size: 1.02rem; color: var(--text-muted-color); margin-bottom: 2rem; }
-        .featured-story-content .read-more-btn { background: var(--text-color); color: var(--card-bg); padding: 0.8rem 1.6rem; text-decoration: none; border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.9rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); align-self: flex-start; }
+        .featured-story-content .description { font-size: 1rem; color: var(--text-muted-color); margin-bottom: 2rem; }
+        .featured-story-content .read-more-btn { background: var(--text-color); color: var(--card-bg); padding: 0.8rem 1.6rem; text-decoration: none; border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.875rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); align-self: flex-start; }
         .featured-story-content .read-more-btn:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; box-shadow: var(--shadow-glow); transform: translateY(-2px); }
 
         .ai-synthesis-card { background-color: var(--card-bg); background-image: var(--surface-gradient); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 2rem; box-shadow: var(--shadow-sm); position: relative; overflow: hidden; }
         .ai-synthesis-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background-image: linear-gradient(180deg, var(--primary-color), var(--secondary-color)); }
         .synthesis-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.1rem; }
-        .synthesis-header i { font-size: 0.95rem; color: #fff; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--border-radius-sm); flex-shrink: 0; }
-        .synthesis-header h2 { font-size: 0.72rem; margin: 0; font-weight: 800; text-transform: uppercase; letter-spacing: 0.13em; color: var(--text-muted-color); }
-        .synthesis-text { font-size: clamp(1.35rem, 2.6vw, 1.75rem); line-height: 1.35; text-align: left; color: var(--text-color); position: relative; max-width: 40ch; margin: 0; }
+        .synthesis-header i { font-size: 0.875rem; color: #fff; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--border-radius-sm); flex-shrink: 0; }
+        .synthesis-header h2 { font-size: 0.75rem; margin: 0; font-weight: 700; text-transform: uppercase; letter-spacing: 0.13em; color: var(--text-muted-color); }
+        .synthesis-text { font-size: 1.5rem; line-height: 1.35; text-align: left; color: var(--text-color); position: relative; max-width: 40ch; margin: 0; }
         .synthesis-keywords { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--card-border-color); text-align: left; position: relative; }
-        .synthesis-keywords .keyword-tag { display: inline-block; background-color: var(--light-bg); border: 1px solid var(--card-border-color); color: var(--text-color); padding: 0.35rem 0.95rem; border-radius: var(--border-radius-pill); margin: 0.2rem 0.3rem 0.2rem 0; font-size: 0.78rem; font-weight: 600; text-decoration: none; transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
+        .synthesis-keywords .keyword-tag { display: inline-block; background-color: var(--light-bg); border: 1px solid var(--card-border-color); color: var(--text-color); padding: 0.35rem 0.95rem; border-radius: var(--border-radius-pill); margin: 0.2rem 0.3rem 0.2rem 0; font-size: 0.75rem; font-weight: 600; text-decoration: none; transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
         .synthesis-keywords .keyword-tag:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; transform: translateY(-2px); }
 
         /* ==========================================================================
@@ -3514,10 +3715,10 @@ BASE_HTML_TEMPLATE = """
            ARTICLE TOOLBAR (read time, listen, text size, share)
            ========================================================================== */
         .article-toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.85rem 0; margin: 1.25rem 0; border-top: 1px solid var(--card-border-color); border-bottom: 1px solid var(--card-border-color); }
-        .toolbar-btn { display: inline-flex; align-items: center; gap: 0.4rem; background: none; border: 1px solid var(--card-border-color); color: var(--text-muted-color); border-radius: var(--border-radius-pill); padding: 0.35rem 0.85rem; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); white-space: nowrap; }
+        .toolbar-btn { display: inline-flex; align-items: center; gap: 0.4rem; background: none; border: 1px solid var(--card-border-color); color: var(--text-muted-color); border-radius: var(--border-radius-pill); padding: 0.35rem 0.85rem; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); white-space: nowrap; }
         .toolbar-btn:hover { color: var(--primary-color); border-color: var(--primary-color); transform: translateY(-1px); }
         .toolbar-btn.is-active { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; }
-        .read-time-badge { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; color: var(--text-muted-color); margin-right: auto; }
+        .read-time-badge { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 600; color: var(--text-muted-color); margin-right: auto; }
         .read-time-badge i { color: var(--secondary-color); }
         .toolbar-spacer { margin-left: auto; }
 
@@ -3525,7 +3726,7 @@ BASE_HTML_TEMPLATE = """
         .share-wrap { position: relative; }
         .share-menu { display: none; position: absolute; right: 0; bottom: calc(100% + 8px); background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); box-shadow: var(--shadow-lg); padding: 0.4rem; min-width: 190px; z-index: 20; animation: fadeInUp 0.22s var(--ease-spring); }
         .share-menu.show { display: block; }
-        .share-menu button, .share-menu a { display: flex; align-items: center; gap: 0.65rem; width: 100%; background: none; border: none; color: var(--text-color); text-decoration: none; padding: 0.55rem 0.75rem; border-radius: var(--border-radius-sm); font-size: 0.86rem; font-weight: 500; text-align: left; transition: background-color var(--duration-fast) var(--ease-standard); }
+        .share-menu button, .share-menu a { display: flex; align-items: center; gap: 0.65rem; width: 100%; background: none; border: none; color: var(--text-color); text-decoration: none; padding: 0.55rem 0.75rem; border-radius: var(--border-radius-sm); font-size: 0.75rem; font-weight: 500; text-align: left; transition: background-color var(--duration-fast) var(--ease-standard); }
         .share-menu button:hover, .share-menu a:hover { background-color: var(--light-bg); color: var(--text-color); }
         .share-menu i { width: 1.1rem; text-align: center; }
         .share-menu .i-whatsapp { color: #25D366; } .share-menu .i-x { color: var(--text-color); }
@@ -3535,10 +3736,10 @@ BASE_HTML_TEMPLATE = """
         /* Text-size presets, applied to the article body */
         .article-full-content-wrapper[data-text-size="large"] .content-text,
         .article-full-content-wrapper[data-text-size="large"] .summary-box p,
-        .article-full-content-wrapper[data-text-size="large"] .takeaways-box li { font-size: 1.22rem; line-height: 1.85; }
+        .article-full-content-wrapper[data-text-size="large"] .takeaways-box li { font-size: 1.125rem; line-height: 1.85; }
         .article-full-content-wrapper[data-text-size="xlarge"] .content-text,
         .article-full-content-wrapper[data-text-size="xlarge"] .summary-box p,
-        .article-full-content-wrapper[data-text-size="xlarge"] .takeaways-box li { font-size: 1.4rem; line-height: 1.9; }
+        .article-full-content-wrapper[data-text-size="xlarge"] .takeaways-box li { font-size: 1.25rem; line-height: 1.9; }
         .tts-highlight { background: rgba(var(--accent-color-rgb), 0.22); border-radius: 3px; }
 
         /* ==========================================================================
@@ -3550,22 +3751,22 @@ BASE_HTML_TEMPLATE = """
         .recent-strip__list::-webkit-scrollbar { height: 6px; }
         .recent-item { flex: 0 0 clamp(200px, 44vw, 260px); scroll-snap-align: start; background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); padding: 0.85rem 1rem; text-decoration: none; color: var(--text-color); transition: transform var(--duration-base) var(--ease-premium), box-shadow var(--duration-base) var(--ease-premium), border-color var(--duration-base) var(--ease-standard); }
         .recent-item:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: rgba(var(--primary-color-rgb), 0.35); color: var(--text-color); }
-        .recent-item__title { font-size: 0.88rem; font-weight: 700; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 0.35rem; letter-spacing: -0.02em; }
-        .recent-item__source { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; color: var(--text-muted-color); }
-        .link-btn { background: none; border: none; color: var(--text-muted-color); font-size: 0.78rem; font-weight: 600; text-decoration: underline; text-underline-offset: 0.2em; padding: 0; }
+        .recent-item__title { font-size: 0.875rem; font-weight: 700; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 0.35rem; letter-spacing: -0.02em; }
+        .recent-item__source { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; color: var(--text-muted-color); }
+        .link-btn { background: none; border: none; color: var(--text-muted-color); font-size: 0.75rem; font-weight: 600; text-decoration: underline; text-underline-offset: 0.2em; padding: 0; }
         .link-btn:hover { color: var(--primary-color); }
 
         /* ==========================================================================
            KEYBOARD SHORTCUTS
            ========================================================================== */
         .kbd-list { display: grid; grid-template-columns: 1fr auto; gap: 0.6rem 1.5rem; align-items: center; }
-        .kbd-list dt { color: var(--text-color); font-size: 0.9rem; }
+        .kbd-list dt { color: var(--text-color); font-size: 0.875rem; }
         .kbd-list dd { margin: 0; text-align: right; }
         kbd { font-family: var(--font-mono); font-size: 0.75rem; background: var(--light-bg); border: 1px solid var(--card-border-color); border-bottom-width: 2px; border-radius: var(--border-radius-xs); padding: 0.15rem 0.45rem; color: var(--text-color); }
 
         /* Comment sort control */
         .comment-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
-        .sort-select { font-size: 0.82rem; font-weight: 600; padding: 0.35rem 2rem 0.35rem 0.75rem; border-radius: var(--border-radius-pill); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); width: auto; }
+        .sort-select { font-size: 0.75rem; font-weight: 600; padding: 0.35rem 2rem 0.35rem 0.75rem; border-radius: var(--border-radius-pill); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); width: auto; }
 
         /* ==========================================================================
            PRINT
@@ -3574,11 +3775,11 @@ BASE_HTML_TEMPLATE = """
             .navbar-main, .offcanvas, footer, .admin-controls, .article-toolbar, .reading-progress,
             #alert-placeholder, .comment-section, .recent-strip, .modal, .offcanvas-backdrop,
             .bookmark-btn, .read-more, .pagination, .btn { display: none !important; }
-            body { padding-top: 0; background: #fff; color: #000; font-size: 12pt; }
+            body { padding-top: 0; background: #fff; color: #000; font-size: 1rem; }
             .article-full-content-wrapper { box-shadow: none; border: none; padding: 0; max-width: 100%; }
             .summary-box, .takeaways-box { border: 1px solid #ccc; background: none !important; break-inside: avoid; }
             .content-text, p { max-width: none; }
-            a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 9pt; color: #555; word-break: break-all; }
+            a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.75rem; color: #555; word-break: break-all; }
             .hero-image-wrap { max-height: 240px; break-inside: avoid; }
         }
 
@@ -3602,14 +3803,14 @@ BASE_HTML_TEMPLATE = """
             .copyright { flex-direction: column; gap: 0.5rem; }
         }
         @media (max-width: 575.98px) {
-            body { font-size: 0.95rem; padding-top: 76px; }
-            .navbar-brand-custom { font-size: 1.3rem; }
+            body { font-size: 0.875rem; padding-top: 76px; }
+            .navbar-brand-custom { font-size: 1.25rem; }
             .comment-replies { margin-left: 1.25rem; padding-left: 1rem; }
             .comment-replies.comment-replies-flat { margin-left: 0.85rem; padding-left: 0.75rem; }
             .comment-container { gap: 0.75rem; }
             .comment-avatar { width: 38px; height: 38px; }
             .comment-replies .comment-avatar { width: 33px; height: 33px; }
-            .profile-avatar { width: 96px; height: 96px; font-size: 2.7rem; }
+            .profile-avatar { width: 96px; height: 96px; font-size: 2.25rem; }
             .profile-stats { gap: 0.5rem; flex-wrap: wrap; }
             .auth-card { margin: 1rem auto; border: none; box-shadow: none; }
             .auth-body, .article-body { padding: 1.4rem; }
@@ -3618,7 +3819,7 @@ BASE_HTML_TEMPLATE = """
     </style>
     {% block head_extra %}{% endblock %}
 </head>
-<body class="{{ request.cookies.get('darkMode', 'disabled') }}{% block body_class %}{% endblock %}">
+<body class="{% if request.cookies.get('darkMode') == 'enabled' %}dark-mode{% endif %} {% block body_class %}{% endblock %}">
 
     <a class="visually-hidden-focusable" href="#main-content">Skip to main content</a>
 
@@ -3628,7 +3829,7 @@ BASE_HTML_TEMPLATE = """
                 <div class="navbar-content-wrapper">
                     <div class="navbar-left">
                         <a class="navbar-brand-custom" href="{{ url_for('index') }}">
-                            <i class="fas fa-bolt-lightning brand-icon" aria-hidden="true"></i>
+                            <i class="ph-fill ph-lightning brand-icon" aria-hidden="true"></i>
                             <span>BrieflyAI</span>
                         </a>
                     </div>
@@ -3636,14 +3837,14 @@ BASE_HTML_TEMPLATE = """
                         <form action="{{ url_for('search_results') }}" method="GET" class="search-container" id="navbarSearchForm">
                             <label for="navbarSearchInput" class="visually-hidden">Search news articles</label>
                             <input type="search" name="query" id="navbarSearchInput" class="form-control navbar-search" placeholder="Search news articles..." value="{{ request.args.get('query', '') }}" autocomplete="off">
-                            <i class="fas fa-search search-icon" aria-hidden="true"></i>
-                            <button type="button" class="search-clear-btn" aria-label="Clear search"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+                            <i class="ph ph-magnifying-glass search-icon" aria-hidden="true"></i>
+                            <button type="button" class="search-clear-btn" aria-label="Clear search"><i class="ph ph-x" aria-hidden="true"></i></button>
                         </form>
                     </div>
                     <div class="navbar-right">
                         <div class="header-controls">
                             <button class="header-btn" type="button" data-bs-toggle="offcanvas" data-bs-target="#mainOffcanvas" aria-controls="mainOffcanvas" aria-label="Open menu">
-                                <i class="fas fa-bars" aria-hidden="true"></i>
+                                <i class="ph ph-list" aria-hidden="true"></i>
                                 <span class="d-none d-sm-inline ms-1">Menu</span>
                             </button>
                         </div>
@@ -3665,7 +3866,7 @@ BASE_HTML_TEMPLATE = """
                 <form action="{{ url_for('search_results') }}" method="GET" class="search-container offcanvas-search">
                     <label for="offcanvasSearchInput" class="visually-hidden">Search news articles</label>
                     <input type="search" name="query" id="offcanvasSearchInput" class="form-control navbar-search" placeholder="Search news articles..." value="{{ request.args.get('query', '') }}" autocomplete="off">
-                    <i class="fas fa-search search-icon" aria-hidden="true"></i>
+                    <i class="ph ph-magnifying-glass search-icon" aria-hidden="true"></i>
                 </form>
             </div>
 
@@ -3677,21 +3878,23 @@ BASE_HTML_TEMPLATE = """
                             <strong class="ms-3">{{ session.user_name|truncate(20) }}</strong>
                         </a>
                         <ul class="dropdown-menu shadow" aria-labelledby="offcanvasUserDropdown">
-                            <li><a class="dropdown-item" href="{{ url_for('profile') }}"><i class="fas fa-id-card fa-fw me-2" aria-hidden="true"></i>Profile</a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('profile') }}"><i class="ph ph-identification-card me-2" aria-hidden="true"></i>Profile</a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('share_testimonial') }}"><i class="ph ph-chat-circle-text me-2" aria-hidden="true"></i>Share your experience</a></li>
+                            {% if session.get('is_admin') %}<li><a class="dropdown-item" href="{{ url_for('admin_testimonials') }}"><i class="ph ph-quotes me-2" aria-hidden="true"></i>Review testimonials</a></li>{% endif %}
                             <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt fa-fw me-2" aria-hidden="true"></i>Logout</a></li>
+                            <li><a class="dropdown-item" href="{{ url_for('logout') }}"><i class="ph ph-sign-out me-2" aria-hidden="true"></i>Logout</a></li>
                         </ul>
                     </div>
                 {% else %}
                     <a href="{{ url_for('login') }}" class="sidebar-btn">
-                        <i class="fas fa-sign-in-alt fa-fw me-2" aria-hidden="true"></i> Login / Register
+                        <i class="ph ph-sign-in me-2" aria-hidden="true"></i> Login / Register
                     </a>
                 {% endif %}
             </div>
 
             <div class="sidebar-section">
                  <button class="sidebar-btn dark-mode-toggle w-100" type="button" aria-pressed="false">
-                    <i class="fas fa-moon fa-fw me-2" aria-hidden="true"></i> <span class="theme-text">Dark Mode</span>
+                    <i class="ph ph-moon me-2" aria-hidden="true"></i> <span class="theme-text">Dark Mode</span>
                  </button>
             </div>
 
@@ -3707,7 +3910,7 @@ BASE_HTML_TEMPLATE = """
                         {% endif %}
                         <li class="nav-item">
                             <a href="{{ url_for('index', **cat_url_params) }}" class="nav-link {% if selected_category == cat_item %}active{% endif %}" {% if selected_category == cat_item %}aria-current="page"{% endif %}>
-                                <i class="fas fa-fw fa-{% if cat_item == 'All Articles' %}globe-americas{% elif cat_item == 'Popular Stories' %}fire-alt{% elif cat_item == "Yesterday's Headlines" %}history{% elif cat_item == 'Community Hub' %}users{% endif %} me-2" aria-hidden="true"></i>
+                                <i class="ph ph-{% if cat_item == 'All Articles' %}globe-hemisphere-east{% elif cat_item == 'Popular Stories' %}fire{% elif cat_item == "Yesterday's Headlines" %}clock-counter-clockwise{% elif cat_item == 'Community Hub' %}users{% endif %} me-2" aria-hidden="true"></i>
                                 {{ cat_item }}
                             </a>
                         </li>
@@ -3755,7 +3958,7 @@ BASE_HTML_TEMPLATE = """
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header border-0 pb-2">
-                    <h2 class="modal-title h5" id="shortcutsModalLabel"><i class="fas fa-keyboard me-2" aria-hidden="true"></i>Keyboard shortcuts</h2>
+                    <h2 class="modal-title h5" id="shortcutsModalLabel"><i class="ph ph-keyboard me-2" aria-hidden="true"></i>Keyboard shortcuts</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -3780,7 +3983,7 @@ BASE_HTML_TEMPLATE = """
             {% if messages %}
                 {% for category, message in messages %}
                 <div class="alert alert-{{ category }} alert-dismissible fade show alert-top" role="alert">
-                    <i class="fas {{ {'success': 'fa-circle-check', 'danger': 'fa-circle-exclamation', 'warning': 'fa-triangle-exclamation'}.get(category, 'fa-circle-info') }} alert-icon" aria-hidden="true"></i>
+                    <i class="ph {{ {'success': 'ph-check-circle', 'danger': 'ph-warning-circle', 'warning': 'ph-warning'}.get(category, 'ph-info') }} alert-icon" aria-hidden="true"></i>
                     <span>{{ message }}</span>
                     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
                 </div>
@@ -3796,7 +3999,7 @@ BASE_HTML_TEMPLATE = """
     {% if session.user_id %}
     <div class="admin-controls">
         <button class="add-article-btn" data-bs-toggle="modal" data-bs-target="#addArticleModal" title="Post a New Article" aria-label="Post a new article">
-            <i class="fas fa-pen-to-square" aria-hidden="true"></i>
+            <i class="ph ph-note-pencil" aria-hidden="true"></i>
         </button>
     </div>
     <div class="modal fade" id="addArticleModal" tabindex="-1" aria-hidden="true" aria-labelledby="addArticleModalLabel">
@@ -3808,7 +4011,7 @@ BASE_HTML_TEMPLATE = """
                 </div>
                 <div class="modal-body">
                     <p class="small text-muted d-flex align-items-center gap-2 mb-3" id="draftStatus" hidden>
-                        <i class="fas fa-cloud-arrow-up" aria-hidden="true"></i><span id="draftStatusText">Draft saved</span>
+                        <i class="ph ph-cloud-arrow-up" aria-hidden="true"></i><span id="draftStatusText">Draft saved</span>
                         <button type="button" class="link-btn ms-auto" id="discardDraftBtn">Discard draft</button>
                     </p>
                     <form id="addArticleForm" action="{{ url_for('post_article') }}" method="POST">
@@ -3831,12 +4034,12 @@ BASE_HTML_TEMPLATE = """
             <div class="footer-content row">
                 <div class="footer-section col-lg-4 col-md-6 mb-4">
                     <div class="d-flex align-items-center mb-2">
-                        <i class="fas fa-bolt-lightning me-2" style="color:var(--secondary-light); font-size: 1.4rem;" aria-hidden="true"></i>
-                        <span class="h5 mb-0" style="color:#fff; font-weight:800; letter-spacing:-0.03em;">BrieflyAI</span>
+                        <i class="ph-fill ph-lightning me-2" style="color:var(--secondary-light); font-size: 1.25rem;" aria-hidden="true"></i>
+                        <span class="h5 mb-0" style="color:#fff; font-weight: 700; letter-spacing:-0.03em;">BrieflyAI</span>
                     </div>
                     <p class="small text-light">Your premier source for AI summarized, India-centric news.</p>
                     <div class="social-links">
-                        <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="fab fa-twitter" aria-hidden="true"></i></a><a href="#" title="Facebook" aria-label="BrieflyAI on Facebook"><i class="fab fa-facebook-f" aria-hidden="true"></i></a><a href="#" title="LinkedIn" aria-label="BrieflyAI on LinkedIn"><i class="fab fa-linkedin-in" aria-hidden="true"></i></a><a href="#" title="Instagram" aria-label="BrieflyAI on Instagram"><i class="fab fa-instagram" aria-hidden="true"></i></a>
+                        <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="ph ph-x-logo" aria-hidden="true"></i></a><a href="#" title="Facebook" aria-label="BrieflyAI on Facebook"><i class="ph ph-facebook-logo" aria-hidden="true"></i></a><a href="#" title="LinkedIn" aria-label="BrieflyAI on LinkedIn"><i class="ph ph-linkedin-logo" aria-hidden="true"></i></a><a href="#" title="Instagram" aria-label="BrieflyAI on Instagram"><i class="ph ph-instagram-logo" aria-hidden="true"></i></a>
                     </div>
                 </div>
                 <div class="footer-section col-lg-2 col-md-6 mb-4">
@@ -3847,6 +4050,7 @@ BASE_HTML_TEMPLATE = """
                         <a href="{{ url_for('about') }}">About Us</a>
                         <a href="{{ url_for('contact') }}">Contact</a>
                         <a href="{{ url_for('privacy') }}">Privacy Policy</a>
+                        <a href="{{ url_for('terms') }}">Terms of Service</a>
                         <a href="{{ url_for('rss_feed') }}">RSS Feed</a>
                         {% if session.user_id %}<a href="{{ url_for('profile') }}">My Profile</a>{% endif %}
                     </div>
@@ -3871,8 +4075,8 @@ BASE_HTML_TEMPLATE = """
                 </div>
             </div>
             <div class="copyright">
-                <span>&copy; {{ current_year }} BrieflyAI. All rights reserved. Made with <i class="fas fa-heart text-danger" aria-hidden="true"></i> in India.</span>
-                <button type="button" class="back-to-top-link" id="backToTopBtn"><i class="fas fa-arrow-up" aria-hidden="true"></i> Back to top</button>
+                <span>&copy; {{ current_year }} BrieflyAI. All rights reserved. Made with <i class="ph-fill ph-heart text-danger" aria-hidden="true"></i> in India.</span>
+                <button type="button" class="back-to-top-link" id="backToTopBtn"><i class="ph ph-arrow-up" aria-hidden="true"></i> Back to top</button>
             </div>
         </div>
     </footer>
@@ -3919,12 +4123,12 @@ BASE_HTML_TEMPLATE = """
         timeout = timeout || 5000;
         var placeholder = document.getElementById('alert-placeholder');
         if (!placeholder) { return null; }
-        var icons = { success: 'fa-circle-check', danger: 'fa-circle-exclamation', warning: 'fa-triangle-exclamation', info: 'fa-circle-info' };
+        var icons = { success: 'ph-check-circle', danger: 'ph-warning-circle', warning: 'ph-warning', info: 'ph-info' };
         var wrap = document.createElement('div');
         wrap.className = 'alert alert-' + type + ' alert-dismissible fade show alert-top';
         wrap.setAttribute('role', 'alert');
         var icon = document.createElement('i');
-        icon.className = 'fas ' + (icons[type] || icons.info) + ' alert-icon';
+        icon.className = 'ph ' + (icons[type] || icons.info) + ' alert-icon';
         icon.setAttribute('aria-hidden', 'true');
         var text = document.createElement('span');
         text.textContent = message;
@@ -4209,7 +4413,7 @@ BASE_HTML_TEMPLATE = """
                     const isDarkMode = body.classList.contains('dark-mode');
                     const themeIcon = darkModeToggle.querySelector('i');
                     const themeText = darkModeToggle.querySelector('.theme-text');
-                    if (themeIcon) { themeIcon.className = isDarkMode ? 'fas fa-sun fa-fw me-2' : 'fas fa-moon fa-fw me-2'; }
+                    if (themeIcon) { themeIcon.className = isDarkMode ? 'ph ph-sun me-2' : 'ph ph-moon me-2'; }
                     if (themeText) { themeText.textContent = isDarkMode ? 'Light Mode' : 'Dark Mode'; }
                     darkModeToggle.setAttribute('aria-pressed', isDarkMode ? 'true' : 'false');
                 };
@@ -4361,7 +4565,7 @@ BASE_HTML_TEMPLATE = """
                     form.addEventListener('submit', function () {
                         if (!input.value.trim()) { return; }
                         const icon = container.querySelector('.search-icon');
-                        if (icon) { icon.className = 'fas fa-circle-notch fa-spin search-icon'; }
+                        if (icon) { icon.className = 'ph ph-circle-notch ph-spin search-icon'; }
                         input.setAttribute('aria-busy', 'true');
                     });
                 }
@@ -4432,12 +4636,12 @@ _COMMENT_TEMPLATE = """
                         <button type="button" class="reaction-emoji {% if user_reaction == emoji %}is-selected{% endif %}" data-emoji="{{ emoji }}" data-comment-id="{{ comment.id }}" role="menuitem" title="{{ emoji_label }}" aria-label="React with {{ emoji_label }}">{{ emoji }}</button>
                     {% endfor %}
                 </div>
-                <button type="button" class="react-btn" data-comment-id="{{ comment.id }}" title="React" aria-haspopup="true" aria-expanded="false" aria-controls="reaction-box-{{ comment.id }}"><i class="far fa-smile" aria-hidden="true"></i> React</button>
-                <button type="button" class="reply-btn" data-comment-id="{{ comment.id }}" title="Reply"><i class="fas fa-reply" aria-hidden="true"></i> Reply</button>
+                <button type="button" class="react-btn" data-comment-id="{{ comment.id }}" title="React" aria-haspopup="true" aria-expanded="false" aria-controls="reaction-box-{{ comment.id }}"><i class="ph ph-smiley" aria-hidden="true"></i> React</button>
+                <button type="button" class="reply-btn" data-comment-id="{{ comment.id }}" title="Reply"><i class="ph ph-arrow-bend-up-left" aria-hidden="true"></i> Reply</button>
 
                 {% if session.user_id == comment.user_id %}
-                    <button type="button" class="edit-btn" data-comment-id="{{ comment.id }}" title="Edit"><i class="fas fa-pencil-alt" aria-hidden="true"></i> Edit</button>
-                    <button type="button" class="delete-btn" data-comment-id="{{ comment.id }}" title="Delete"><i class="fas fa-trash-alt" aria-hidden="true"></i> Delete</button>
+                    <button type="button" class="edit-btn" data-comment-id="{{ comment.id }}" title="Edit"><i class="ph ph-pencil-simple" aria-hidden="true"></i> Edit</button>
+                    <button type="button" class="delete-btn" data-comment-id="{{ comment.id }}" title="Delete"><i class="ph ph-trash" aria-hidden="true"></i> Delete</button>
                 {% endif %}
             </div>
             <div class="reply-form-container" id="reply-form-container-{{ comment.id }}">
@@ -4490,7 +4694,7 @@ INDEX_HTML_TEMPLATE = """
         {% if synthesis %}
         <div class="ai-synthesis-card">
             <div class="synthesis-header">
-                <i class="fas fa-brain" aria-hidden="true"></i>
+                <i class="ph ph-brain" aria-hidden="true"></i>
                 <h2>Today's Briefing: The Big Picture</h2>
             </div>
             <p class="synthesis-text">&ldquo;{{ synthesis }}&rdquo;</p>
@@ -4509,26 +4713,26 @@ INDEX_HTML_TEMPLATE = """
             <div class="featured-story-image" style="background-image: url('{{ featured_article.urlToImage }}')" role="img" aria-label="{{ featured_article.title|truncate(80) }}"></div>
             <div class="featured-story-content">
                 <div class="article-meta">
-                    <span class="meta-item"><i class="fas fa-fire-alt" aria-hidden="true"></i> Top Story</span>
-                    <span class="meta-item"><i class="fas fa-building" aria-hidden="true"></i> {{ featured_article.source.name|truncate(20) }}</span>
+                    <span class="meta-item"><i class="ph ph-fire" aria-hidden="true"></i> Top Story</span>
+                    <span class="meta-item"><i class="ph ph-buildings" aria-hidden="true"></i> {{ featured_article.source.name|truncate(20) }}</span>
                 </div>
                 <h2><a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}">{{ featured_article.title }}</a></h2>
                 <p class="description">{{ featured_article.description|truncate(150) }}</p>
-                <a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}" class="read-more-btn">Read Full Story <i class="fas fa-arrow-right ms-1" aria-hidden="true"></i></a>
+                <a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}" class="read-more-btn">Read Full Story <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
             </div>
         </article>
         {% endif %}
 
         <section class="recent-strip" id="trendingStrip" hidden aria-labelledby="trendingHeading">
             <div class="recent-strip__head">
-                <h2 class="section-heading h5 mb-0" id="trendingHeading"><i class="fas fa-arrow-trend-up me-2" aria-hidden="true"></i>Trending this week</h2>
+                <h2 class="section-heading h5 mb-0" id="trendingHeading"><i class="ph ph-trend-up me-2" aria-hidden="true"></i>Trending this week</h2>
             </div>
             <div class="recent-strip__list" id="trendingList"></div>
         </section>
 
         <section class="recent-strip" id="recentStrip" hidden aria-labelledby="recentStripHeading">
             <div class="recent-strip__head">
-                <h2 class="section-heading h5 mb-0" id="recentStripHeading"><i class="fas fa-clock-rotate-left me-2" aria-hidden="true"></i>Pick up where you left off</h2>
+                <h2 class="section-heading h5 mb-0" id="recentStripHeading"><i class="ph ph-clock-counter-clockwise me-2" aria-hidden="true"></i>Pick up where you left off</h2>
                 <button type="button" class="link-btn" id="clearRecentBtn">Clear</button>
             </div>
             <div class="recent-strip__list" id="recentStripList"></div>
@@ -4537,12 +4741,12 @@ INDEX_HTML_TEMPLATE = """
         <ul class="nav nav-tabs nav-fill mb-3" id="newsTab" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="popular-tab" data-bs-toggle="tab" data-bs-target="#popular-tab-pane" type="button" role="tab" aria-controls="popular-tab-pane" aria-selected="true">
-                    <i class="fas fa-fire-alt me-1" aria-hidden="true"></i> POPULAR STORIES
+                    <i class="ph ph-fire me-1" aria-hidden="true"></i> POPULAR STORIES
                 </button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="yesterday-tab" data-bs-toggle="tab" data-bs-target="#yesterday-tab-pane" type="button" role="tab" aria-controls="yesterday-tab-pane" aria-selected="false">
-                    <i class="fas fa-history me-1" aria-hidden="true"></i> YESTERDAY'S HEADLINES
+                    <i class="ph ph-clock-counter-clockwise me-1" aria-hidden="true"></i> YESTERDAY'S HEADLINES
                 </button>
             </li>
         </ul>
@@ -4557,19 +4761,19 @@ INDEX_HTML_TEMPLATE = """
                                     {% set article_url = url_for('article_detail', article_hash_id=art.id) %}
                                     <div class="article-image-container {% if not art.urlToImage %}img-fallback{% endif %}">
                                         <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if art.urlToImage %}<img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="{{ 'eager' if loop.index0 < 3 else 'lazy' }}" decoding="async">{% endif %}</a>
-                                        <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                                        <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
                                     </div>
                                     <div class="article-body d-flex flex-column">
                                         <div class="d-flex justify-content-between align-items-start">
                                             <h3 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
-                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="fa-solid fa-bookmark" aria-hidden="true"></i></button>{% endif %}
+                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>{% endif %}
                                         </div>
                                         <div class="article-meta small mb-2">
-                                            <span class="meta-item text-muted"><i class="fas fa-building" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
-                                            <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
+                                            <span class="meta-item text-muted"><i class="ph ph-buildings" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
+                                            <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                                         </div>
                                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
+                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                                     </div>
                                 </article>
                             </div>
@@ -4577,7 +4781,7 @@ INDEX_HTML_TEMPLATE = """
                     {% else %}
                         <div class="col-12">
                             <div class="state-card state-card-solid py-4">
-                                <div class="state-card-icon state-card-icon-sm"><i class="fas fa-satellite-dish" aria-hidden="true"></i></div>
+                                <div class="state-card-icon state-card-icon-sm"><i class="ph ph-broadcast" aria-hidden="true"></i></div>
                                 <p class="state-card-text mb-0">More popular stories are on their way &mdash; please check back shortly.</p>
                             </div>
                         </div>
@@ -4585,7 +4789,7 @@ INDEX_HTML_TEMPLATE = """
                 </div>
                 {% if popular_articles %}
                 <div class="text-center mt-4">
-                    <a href="{{ url_for('index', category_name='Popular Stories') }}" class="btn btn-outline-primary">View All Popular Stories <i class="fas fa-arrow-right ms-1" aria-hidden="true"></i></a>
+                    <a href="{{ url_for('index', category_name='Popular Stories') }}" class="btn btn-outline-primary">View All Popular Stories <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
                 </div>
                 {% endif %}
             </div>
@@ -4598,19 +4802,19 @@ INDEX_HTML_TEMPLATE = """
                                     {% set article_url = url_for('article_detail', article_hash_id=art.id) %}
                                     <div class="article-image-container {% if not art.urlToImage %}img-fallback{% endif %}">
                                         <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if art.urlToImage %}<img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
-                                        <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                                        <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
                                     </div>
                                     <div class="article-body d-flex flex-column">
                                         <div class="d-flex justify-content-between align-items-start">
                                             <h3 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
-                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="fa-solid fa-bookmark" aria-hidden="true"></i></button>{% endif %}
+                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>{% endif %}
                                         </div>
                                         <div class="article-meta small mb-2">
-                                            <span class="meta-item text-muted"><i class="fas fa-building" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
-                                            <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
+                                            <span class="meta-item text-muted"><i class="ph ph-buildings" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
+                                            <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                                         </div>
                                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
+                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                                     </div>
                                 </article>
                             </div>
@@ -4618,7 +4822,7 @@ INDEX_HTML_TEMPLATE = """
                     {% else %}
                         <div class="col-12">
                             <div class="state-card state-card-solid py-4">
-                                <div class="state-card-icon state-card-icon-sm"><i class="fas fa-satellite-dish" aria-hidden="true"></i></div>
+                                <div class="state-card-icon state-card-icon-sm"><i class="ph ph-broadcast" aria-hidden="true"></i></div>
                                 <p class="state-card-text mb-0">Yesterday's headlines couldn't be loaded right now &mdash; please check back shortly.</p>
                             </div>
                         </div>
@@ -4626,7 +4830,7 @@ INDEX_HTML_TEMPLATE = """
                 </div>
                 {% if latest_yesterday_articles %}
                 <div class="text-center mt-4">
-                    <a href="{{ url_for('index', category_name="Yesterday's Headlines") }}" class="btn btn-outline-primary">View All of Yesterday's Headlines <i class="fas fa-arrow-right ms-1" aria-hidden="true"></i></a>
+                    <a href="{{ url_for('index', category_name="Yesterday's Headlines") }}" class="btn btn-outline-primary">View All of Yesterday's Headlines <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
                 </div>
                 {% endif %}
             </div>
@@ -4640,30 +4844,30 @@ INDEX_HTML_TEMPLATE = """
 
     {% if selected_category == 'All Articles' and current_filter_date %}
         <div class="list-page-header">
-            <span class="eyebrow"><i class="far fa-calendar-alt me-1" aria-hidden="true"></i> Filtered by date</span>
+            <span class="eyebrow"><i class="ph ph-calendar-blank me-1" aria-hidden="true"></i> Filtered by date</span>
             <h1>{{ current_filter_date }}</h1>
         </div>
     {% elif selected_category == 'Community Hub' %}
         <div class="community-hub-header">
             <div class="community-hub-header-text">
-                <span class="eyebrow"><i class="fas fa-users me-1" aria-hidden="true"></i> Community Hub</span>
+                <span class="eyebrow"><i class="ph ph-users me-1" aria-hidden="true"></i> Community Hub</span>
                 <h1>Stories from our readers</h1>
                 <p class="community-hub-sub">Real perspectives, posted by the BrieflyAI community. Have something to say about today's news?</p>
             </div>
             {% if session.user_id %}
-                <button type="button" class="btn btn-primary-modal community-hub-cta" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="fas fa-pen-to-square me-2" aria-hidden="true"></i>Share Your Story</button>
+                <button type="button" class="btn btn-primary-modal community-hub-cta" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>Share Your Story</button>
             {% else %}
-                <a href="{{ url_for('login', next=request.full_path) }}" class="btn btn-outline-primary community-hub-cta"><i class="fas fa-sign-in-alt me-2" aria-hidden="true"></i>Log In to Post</a>
+                <a href="{{ url_for('login', next=request.full_path) }}" class="btn btn-outline-primary community-hub-cta"><i class="ph ph-sign-in me-2" aria-hidden="true"></i>Log In to Post</a>
             {% endif %}
         </div>
     {% elif query %}
         <div class="list-page-header">
-            <span class="eyebrow"><i class="fas fa-magnifying-glass me-1" aria-hidden="true"></i> Search results</span>
+            <span class="eyebrow"><i class="ph ph-magnifying-glass me-1" aria-hidden="true"></i> Search results</span>
             <h1>&ldquo;{{ query|truncate(40) }}&rdquo;</h1>
         </div>
     {% elif selected_category != 'All Articles' %}
         <div class="list-page-header">
-            <span class="eyebrow"><i class="fas fa-{% if selected_category == 'Popular Stories' %}fire-alt{% elif selected_category == "Yesterday's Headlines" %}history{% else %}layer-group{% endif %} me-1" aria-hidden="true"></i> Category</span>
+            <span class="eyebrow"><i class="ph ph-{% if selected_category == 'Popular Stories' %}fire{% elif selected_category == "Yesterday's Headlines" %}clock-counter-clockwise{% else %}stack{% endif %} me-1" aria-hidden="true"></i> Category</span>
             <h1>{{ selected_category }}</h1>
         </div>
     {% endif %}
@@ -4678,7 +4882,7 @@ INDEX_HTML_TEMPLATE = """
                     <div class="article-image-container {% if not img_src %}img-fallback{% endif %}">
                         <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">
                         {% if img_src %}<img src="{{ img_src }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="{{ 'eager' if loop.index0 < 3 else 'lazy' }}" decoding="async">{% endif %}</a>
-                        <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                        <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
                     </div>
                     <div class="article-body d-flex flex-column">
                         <div class="d-flex justify-content-between align-items-start">
@@ -4694,16 +4898,16 @@ INDEX_HTML_TEMPLATE = """
                                     data-image-url="{{ (art.image_url if art.is_community_article else art.urlToImage)|e }}"
                                     data-description="{{ (art.description if art.description else '')|e }}"
                                     data-published-at="{{ (art.published_at.isoformat() if art.is_community_article and art.published_at else (art.publishedAt if not art.is_community_article and art.publishedAt else ''))|e }}">
-                                <i class="fa-solid fa-bookmark" aria-hidden="true"></i>
+                                <i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i>
                             </button>
                             {% endif %}
                         </div>
                         <div class="article-meta small mb-2">
-                            <span class="meta-item text-muted"><i class="fas fa-{{ 'user-edit' if art.is_community_article else 'building' }}" aria-hidden="true"></i> {% if art.is_community_article and art.author %}<a href="{{ url_for('public_profile', username=art.author.username) }}" class="text-muted text-decoration-none">{{ art.author.name|truncate(20) }}</a>{% else %}{{ art.source.name|truncate(20) }}{% endif %}</span>
-                            <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (art.published_at | to_ist if art.is_community_article else (art.publishedAt | to_ist if art.publishedAt else 'N/A')) }}</span>
+                            <span class="meta-item text-muted"><i class="ph ph-{{ 'user-circle' if art.is_community_article else 'buildings' }}" aria-hidden="true"></i> {% if art.is_community_article and art.author %}<a href="{{ url_for('public_profile', username=art.author.username) }}" class="text-muted text-decoration-none">{{ art.author.name|truncate(20) }}</a>{% else %}{{ art.source.name|truncate(20) }}{% endif %}</span>
+                            <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (art.published_at | to_ist if art.is_community_article else (art.publishedAt | to_ist if art.publishedAt else 'N/A')) }}</span>
                         </div>
                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
+                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                     </div>
                 </article>
             </div>
@@ -4712,14 +4916,14 @@ INDEX_HTML_TEMPLATE = """
     {% elif not articles %}
         {% if query %}
         <div class="state-card">
-            <div class="state-card-icon"><i class="fas fa-magnifying-glass" aria-hidden="true"></i></div>
+            <div class="state-card-icon"><i class="ph ph-magnifying-glass" aria-hidden="true"></i></div>
             <h2 class="state-card-title">No results for &ldquo;{{ query|truncate(40) }}&rdquo;</h2>
             <p class="state-card-text">Try a different search term, or browse by category instead.</p>
             <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Browse All Articles</a></div>
         </div>
         {% else %}
         <div class="state-card">
-            <div class="state-card-icon"><i class="fas fa-newspaper" aria-hidden="true"></i></div>
+            <div class="state-card-icon"><i class="ph ph-newspaper" aria-hidden="true"></i></div>
             <h2 class="state-card-title">No articles here yet</h2>
             <p class="state-card-text">Try a different category, or check back again soon.</p>
             <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Back to Homepage</a></div>
@@ -4896,7 +5100,7 @@ ARTICLE_HTML_TEMPLATE = """
 {% block content %}
 {% if not article %}
     <div class="state-card state-card-danger">
-        <div class="state-card-icon"><i class="fas fa-newspaper" aria-hidden="true"></i></div>
+        <div class="state-card-icon"><i class="ph ph-newspaper" aria-hidden="true"></i></div>
         <h1 class="state-card-title">Article Not Found</h1>
         <p class="state-card-text">The article you're looking for may have been removed, or the link may be incorrect.</p>
         <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Go to Homepage</a></div>
@@ -4905,70 +5109,70 @@ ARTICLE_HTML_TEMPLATE = """
 <div class="reading-progress" aria-hidden="true"><div class="reading-progress__fill" id="readingProgressFill"></div></div>
 <article class="article-full-content-wrapper animate-fade-in" id="articleWrapper" data-text-size="normal">
     <div class="mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <a href="{{ previous_list_page }}" class="btn btn-sm btn-outline-secondary"><i class="fas fa-arrow-left me-2" aria-hidden="true"></i>Back to List</a>
+        <a href="{{ previous_list_page }}" class="btn btn-sm btn-outline-secondary"><i class="ph ph-arrow-left me-2" aria-hidden="true"></i>Back to List</a>
 
         <div class="d-flex align-items-center gap-2">
 
             {% if session.get('is_admin') and is_community_article %}
             <button type="button" id="adminDeleteBtn" class="btn btn-sm btn-danger" title="Admin: Delete Post">
-                <i class="fas fa-trash-alt" aria-hidden="true"></i> Delete Post
+                <i class="ph ph-trash" aria-hidden="true"></i> Delete Post
             </button>
             {% endif %}
 
             {% if session.user_id %}
                 {% if is_community_article %}
                 <button type="button" id="reportBtn" class="btn btn-sm btn-outline-warning" title="Report this article for review">
-                    <i class="fas fa-flag" aria-hidden="true"></i> Report
+                    <i class="ph ph-flag" aria-hidden="true"></i> Report
                 </button>
                 {% endif %}
 
-                <button type="button" id="bookmarkBtn" class="bookmark-btn {% if is_bookmarked %}active{% endif %}" title="{% if is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for this article" data-article-hash-id="{{ article.article_hash_id if is_community_article else article.id }}" data-is-community="{{ 'true' if is_community_article else 'false' }}" data-title="{{ article.title|e }}" data-source-name="{{ (article.author.name if is_community_article and article.author else article.source.name)|e }}" data-image-url="{{ (article.image_url if is_community_article else article.urlToImage)|e }}" data-description="{{ (article.description if article.description else '')|e }}" data-published-at="{{ (article.published_at.isoformat() if is_community_article and article.published_at else (article.publishedAt if not is_community_article and article.publishedAt else ''))|e }}"><i class="fa-solid fa-bookmark" aria-hidden="true"></i></button>
+                <button type="button" id="bookmarkBtn" class="bookmark-btn {% if is_bookmarked %}active{% endif %}" title="{% if is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for this article" data-article-hash-id="{{ article.article_hash_id if is_community_article else article.id }}" data-is-community="{{ 'true' if is_community_article else 'false' }}" data-title="{{ article.title|e }}" data-source-name="{{ (article.author.name if is_community_article and article.author else article.source.name)|e }}" data-image-url="{{ (article.image_url if is_community_article else article.urlToImage)|e }}" data-description="{{ (article.description if article.description else '')|e }}" data-published-at="{{ (article.published_at.isoformat() if is_community_article and article.published_at else (article.publishedAt if not is_community_article and article.publishedAt else ''))|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>
             {% endif %}
         </div>
     </div>
 
     <h1 class="mb-2 article-title-main">{{ article.title }}</h1>
     <div class="article-meta-detailed d-flex align-items-center flex-wrap gap-2 text-muted small">
-        <span class="meta-item" title="Source"><i class="fas fa-{{ 'user-edit' if is_community_article else 'building' }}" aria-hidden="true"></i> {{ article.author.name if is_community_article and article.author else article.source.name }}</span>
-        <span class="meta-item" title="Published Date"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (article.published_at | to_ist if is_community_article else (article.publishedAt | to_ist if article.publishedAt else 'N/A')) }}</span>
+        <span class="meta-item" title="Source"><i class="ph ph-{{ 'user-circle' if is_community_article else 'buildings' }}" aria-hidden="true"></i> {{ article.author.name if is_community_article and article.author else article.source.name }}</span>
+        <span class="meta-item" title="Published Date"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (article.published_at | to_ist if is_community_article else (article.publishedAt | to_ist if article.publishedAt else 'N/A')) }}</span>
     </div>
     {% set image_to_display = article.image_url if is_community_article else article.urlToImage %}
     {% if image_to_display %}
     <div class="hero-image-wrap">
         <img src="{{ image_to_display }}" alt="{{ article.title|truncate(50) }}" class="hero-image" loading="eager" decoding="async">
-        <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+        <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
     </div>
     {% endif %}
 
     <div class="article-toolbar" role="toolbar" aria-label="Article tools">
         <span class="read-time-badge" id="readTimeBadge" {% if not is_community_article %}hidden{% endif %}>
-            <i class="far fa-clock" aria-hidden="true"></i>
+            <i class="ph ph-clock" aria-hidden="true"></i>
             <span id="readTimeValue">{% if is_community_article and article.full_text %}{{ [1, ((article.full_text|wordcount) / 220)|round(0, 'ceil')|int]|max }} min read{% endif %}</span>
         </span>
 
         <button type="button" class="toolbar-btn" id="listenBtn" hidden aria-pressed="false">
-            <i class="fas fa-headphones" aria-hidden="true"></i> <span class="listen-label">Listen</span>
+            <i class="ph ph-headphones" aria-hidden="true"></i> <span class="listen-label">Listen</span>
         </button>
 
         <button type="button" class="toolbar-btn" id="textSizeBtn" aria-label="Change text size">
-            <i class="fas fa-font" aria-hidden="true"></i> <span id="textSizeLabel">Normal</span>
+            <i class="ph ph-text-aa" aria-hidden="true"></i> <span id="textSizeLabel">Normal</span>
         </button>
 
         <div class="share-wrap">
             <button type="button" class="toolbar-btn" id="shareBtn" aria-haspopup="true" aria-expanded="false" aria-controls="shareMenu">
-                <i class="fas fa-share-nodes" aria-hidden="true"></i> Share
+                <i class="ph ph-share-network" aria-hidden="true"></i> Share
             </button>
             <div class="share-menu" id="shareMenu" role="menu" aria-label="Share this article">
-                <a href="#" data-share="whatsapp" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="fab fa-whatsapp i-whatsapp" aria-hidden="true"></i> WhatsApp</a>
-                <a href="#" data-share="x" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="fab fa-x-twitter i-x" aria-hidden="true"></i> X (Twitter)</a>
-                <a href="#" data-share="facebook" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="fab fa-facebook i-facebook" aria-hidden="true"></i> Facebook</a>
-                <a href="#" data-share="linkedin" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="fab fa-linkedin i-linkedin" aria-hidden="true"></i> LinkedIn</a>
-                <button type="button" data-share="copy" role="menuitem"><i class="fas fa-link i-link" aria-hidden="true"></i> Copy link</button>
+                <a href="#" data-share="whatsapp" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="ph ph-whatsapp-logo i-whatsapp" aria-hidden="true"></i> WhatsApp</a>
+                <a href="#" data-share="x" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="ph ph-x-logo i-x" aria-hidden="true"></i> X (Twitter)</a>
+                <a href="#" data-share="facebook" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="ph ph-facebook-logo i-facebook" aria-hidden="true"></i> Facebook</a>
+                <a href="#" data-share="linkedin" role="menuitem" target="_blank" rel="noopener noreferrer"><i class="ph ph-linkedin-logo i-linkedin" aria-hidden="true"></i> LinkedIn</a>
+                <button type="button" data-share="copy" role="menuitem"><i class="ph ph-link i-link" aria-hidden="true"></i> Copy link</button>
             </div>
         </div>
 
         <button type="button" class="toolbar-btn" id="printBtn" aria-label="Print this article">
-            <i class="fas fa-print" aria-hidden="true"></i>
+            <i class="ph ph-printer" aria-hidden="true"></i>
         </button>
     </div>
 
@@ -4984,12 +5188,12 @@ ARTICLE_HTML_TEMPLATE = """
             <div class="ai-skeleton-line w-90"></div>
             <div class="ai-skeleton-line w-70"></div>
         </div>
-        <p class="ai-skeleton-caption"><i class="fas fa-brain fa-fw" aria-hidden="true"></i> Generating AI summary&hellip;</p>
+        <p class="ai-skeleton-caption"><i class="ph ph-brain" aria-hidden="true"></i> Generating AI summary&hellip;</p>
     </div>
     <div id="articleAnalysisContainer">
     {% if is_community_article %}
-        {% if article.groq_summary %}<div class="summary-box my-3"><h2><i class="fas fa-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">{{ article.groq_summary|e|replace('\\n', '<br>')|safe }}</p></div>{% endif %}
-        {% if article.parsed_takeaways %}<div class="takeaways-box my-3"><h2><i class="fas fa-list-check me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>{% for takeaway in article.parsed_takeaways %}<li>{{ takeaway }}</li>{% endfor %}</ul></div>{% endif %}
+        {% if article.groq_summary %}<div class="summary-box my-3"><h2><i class="ph ph-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">{{ article.groq_summary|e|replace('\\n', '<br>')|safe }}</p></div>{% endif %}
+        {% if article.parsed_takeaways %}<div class="takeaways-box my-3"><h2><i class="ph ph-list-checks me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>{% for takeaway in article.parsed_takeaways %}<li>{{ takeaway }}</li>{% endfor %}</ul></div>{% endif %}
         <hr class="my-4"><h2 class="content-divider-heading">Full Article Content</h2><div class="content-text">{{ article.full_text }}</div>
     {% else %}<div id="apiArticleContent"></div>{% endif %}
     </div>
@@ -5013,7 +5217,7 @@ ARTICLE_HTML_TEMPLATE = """
             {% for comment in comments %}
                 {% include '_COMMENT_TEMPLATE' %}
             {% else %}
-                <p id="no-comments-msg" class="text-muted mt-3"><i class="far fa-comment-dots me-2" aria-hidden="true"></i>No comments yet. Be the first to share your thoughts!</p>
+                <p id="no-comments-msg" class="text-muted mt-3"><i class="ph ph-chat-dots me-2" aria-hidden="true"></i>No comments yet. Be the first to share your thoughts!</p>
             {% endfor %}
         </div>
 
@@ -5028,7 +5232,7 @@ ARTICLE_HTML_TEMPLATE = """
             </div>
         {% else %}
             <div class="comment-login-prompt">
-                <i class="fas fa-comments" aria-hidden="true"></i>
+                <i class="ph ph-chats" aria-hidden="true"></i>
                 <p class="mb-0">Please <a href="{{ url_for('login', next=request.url) }}" class="fw-bold">log in</a> to join the discussion.</p>
             </div>
         {% endif %}
@@ -5109,7 +5313,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 btn.classList.toggle('is-active', on);
                 btn.setAttribute('aria-pressed', on ? 'true' : 'false');
                 btn.querySelector('.listen-label').textContent = on ? 'Stop' : 'Listen';
-                btn.querySelector('i').className = on ? 'fas fa-stop' : 'fas fa-headphones';
+                btn.querySelector('i').className = on ? 'ph ph-stop' : 'ph ph-headphones';
             }
             btn.addEventListener('click', function () {
                 if (speaking) { window.speechSynthesis.cancel(); setState(false); return; }
@@ -5244,7 +5448,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (!confirmed) return;
 
                 this.disabled = true;
-                this.innerHTML = '<i class="fas fa-spinner fa-spin" aria-hidden="true"></i> Deleting...';
+                this.innerHTML = '<i class="ph ph-circle-notch ph-spin" aria-hidden="true"></i> Deleting...';
 
                 BrieflyAI.postJSON(`/delete_community_article/${articleHashIdGlobal}`)
                 .then(res => res.json().then(data => ({ ok: res.ok, data })))
@@ -5254,14 +5458,14 @@ document.addEventListener('DOMContentLoaded', function () {
                     } else {
                         BrieflyAI.showToast('Deletion failed: ' + (data.error || 'Unknown error'), 'danger');
                         this.disabled = false;
-                        this.innerHTML = '<i class="fas fa-trash-alt" aria-hidden="true"></i> Delete Post';
+                        this.innerHTML = '<i class="ph ph-trash" aria-hidden="true"></i> Delete Post';
                     }
                 })
                 .catch(err => {
                     console.error("Admin delete error:", err);
                     BrieflyAI.showToast("A network error occurred. Could not delete the post.", 'danger');
                     this.disabled = false;
-                    this.innerHTML = '<i class="fas fa-trash-alt" aria-hidden="true"></i> Delete Post';
+                    this.innerHTML = '<i class="ph ph-trash" aria-hidden="true"></i> Delete Post';
                 });
             });
         }
@@ -5281,11 +5485,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (analysis) {
                         if (analysis.error) { html += `<div class="alert alert-secondary small p-3 mt-3">AI analysis could not be performed: ${analysis.error}</div>`; }
                         else {
-                            if (analysis.groq_summary) { html += `<div class="summary-box my-3"><h2><i class="fas fa-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">${analysis.groq_summary.replace(/\\n/g, '<br>')}</p></div>`; }
-                            if (analysis.groq_takeaways && analysis.groq_takeaways.length > 0) { html += `<div class="takeaways-box my-3"><h2><i class="fas fa-list-check me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>${analysis.groq_takeaways.map(t => `<li>${String(t)}</li>`).join('')}</ul></div>`; }
+                            if (analysis.groq_summary) { html += `<div class="summary-box my-3"><h2><i class="ph ph-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">${analysis.groq_summary.replace(/\\n/g, '<br>')}</p></div>`; }
+                            if (analysis.groq_takeaways && analysis.groq_takeaways.length > 0) { html += `<div class="takeaways-box my-3"><h2><i class="ph ph-list-checks me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>${analysis.groq_takeaways.map(t => `<li>${String(t)}</li>`).join('')}</ul></div>`; }
                         }
                     }
-                    if (articleUrl) { html += `<hr class="my-4"><a href="${articleUrl}" class="btn btn-outline-primary mt-3 mb-3" target="_blank" rel="noopener noreferrer">Read Original Article at ${articleSourceName} <i class="fas fa-external-link-alt ms-1" aria-hidden="true"></i></a>`; }
+                    if (articleUrl) { html += `<hr class="my-4"><a href="${articleUrl}" class="btn btn-outline-primary mt-3 mb-3" target="_blank" rel="noopener noreferrer">Read Original Article at ${articleSourceName} <i class="ph ph-arrow-square-out ms-1" aria-hidden="true"></i></a>`; }
                     apiArticleContent.innerHTML = html;
                     // Read time comes from whatever text we actually received.
                     BrieflyAI.setReadTime(data.full_text || (analysis && analysis.groq_summary) || '');
@@ -5536,16 +5740,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (!confirmed) return;
 
                 this.disabled = true;
-                this.innerHTML = '<i class="fas fa-spinner fa-spin" aria-hidden="true"></i> Reporting...';
+                this.innerHTML = '<i class="ph ph-circle-notch ph-spin" aria-hidden="true"></i> Reporting...';
                 BrieflyAI.postJSON(`/report_article/${articleHashIdGlobal}`)
                 .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
                 .then(({ ok, status, data }) => {
                     if (ok) {
-                        this.innerHTML = '<i class="fas fa-check" aria-hidden="true"></i> Reported';
+                        this.innerHTML = '<i class="ph ph-check" aria-hidden="true"></i> Reported';
                         BrieflyAI.showToast(data.message, 'success');
                     } else {
                         this.disabled = false;
-                        this.innerHTML = '<i class="fas fa-flag" aria-hidden="true"></i> Report';
+                        this.innerHTML = '<i class="ph ph-flag" aria-hidden="true"></i> Report';
                         BrieflyAI.showToast('Error: ' + data.error, 'danger');
                     }
                 })
@@ -5553,7 +5757,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     console.error("Report error:", err);
                     BrieflyAI.showToast("A network error occurred. Please try again.", 'danger');
                     this.disabled = false;
-                    this.innerHTML = '<i class="fas fa-flag" aria-hidden="true"></i> Report';
+                    this.innerHTML = '<i class="ph ph-flag" aria-hidden="true"></i> Report';
                 });
             });
         }
@@ -5605,7 +5809,7 @@ LOGIN_HTML_TEMPLATE = """
 {% block content %}
 <div class="auth-card animate-fade-in">
     <div class="auth-header">
-        <div class="icon"><i class="fas fa-bolt-lightning" aria-hidden="true"></i></div>
+        <div class="icon"><i class="ph-fill ph-lightning" aria-hidden="true"></i></div>
         <h1>Welcome Back to BrieflyAI</h1>
     </div>
     <div class="auth-body">
@@ -5614,14 +5818,14 @@ LOGIN_HTML_TEMPLATE = """
             <div class="mb-3">
                 <label for="username" class="form-label fw-medium">Username</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-user input-icon" aria-hidden="true"></i>
+                    <i class="ph ph-user input-icon" aria-hidden="true"></i>
                     <input type="text" class="form-control" id="username" name="username" required placeholder="e.g. user123" autocomplete="username">
                 </div>
             </div>
             <div class="mb-4">
                 <label for="password" class="form-label fw-medium">Password</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-lock input-icon" aria-hidden="true"></i>
+                    <i class="ph ph-lock input-icon" aria-hidden="true"></i>
                     <input type="password" class="form-control" id="password" name="password" required placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password">
                 </div>
             </div>
@@ -5659,7 +5863,7 @@ REGISTER_HTML_TEMPLATE = """
 {% block content %}
 <div class="auth-card animate-fade-in">
      <div class="auth-header">
-        <div class="icon"><i class="fas fa-user-plus" aria-hidden="true"></i></div>
+        <div class="icon"><i class="ph ph-user-plus" aria-hidden="true"></i></div>
         <h1>Create Your Account</h1>
     </div>
     <div class="auth-body">
@@ -5668,21 +5872,21 @@ REGISTER_HTML_TEMPLATE = """
              <div class="mb-3">
                 <label for="name" class="form-label fw-medium">Full Name</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-id-card input-icon" aria-hidden="true"></i>
+                    <i class="ph ph-identification-card input-icon" aria-hidden="true"></i>
                     <input type="text" class="form-control" id="name" name="name" required placeholder="e.g. John Doe" autocomplete="name">
                 </div>
             </div>
             <div class="mb-3">
                 <label for="username" class="form-label fw-medium">Username</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-user input-icon" aria-hidden="true"></i>
+                    <i class="ph ph-user input-icon" aria-hidden="true"></i>
                     <input type="text" class="form-control" id="username" name="username" required minlength="3" placeholder="e.g. johndoe (min 3 chars)" autocomplete="username">
                 </div>
             </div>
             <div class="mb-4">
                 <label for="password" class="form-label fw-medium">Password</label>
                 <div class="input-group-icon">
-                    <i class="fas fa-lock input-icon" aria-hidden="true"></i>
+                    <i class="ph ph-lock input-icon" aria-hidden="true"></i>
                     <input type="password" class="form-control" id="password" name="password" required minlength="6" placeholder="min 6 chars" autocomplete="new-password">
                 </div>
             </div>
@@ -5724,12 +5928,12 @@ PROFILE_HTML_TEMPLATE = """
     <p class="small text-muted mb-0">Joined: {{ user.created_at | to_ist }}</p>
     <div class="profile-stats">
         <button type="button" class="stat-item" data-target-tab="posted-tab" aria-label="View articles you've posted">
-            <div class="icon"><i class="fas fa-pen-to-square" aria-hidden="true"></i></div>
+            <div class="icon"><i class="ph ph-note-pencil" aria-hidden="true"></i></div>
             <div class="count">{{ posted_articles|length }}</div>
             <div class="label">Articles Posted</div>
         </button>
         <button type="button" class="stat-item" data-target-tab="bookmarks-tab" aria-label="View your bookmarks">
-            <div class="icon"><i class="fas fa-bookmark" aria-hidden="true"></i></div>
+            <div class="icon"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></div>
             <div class="count">{{ bookmarks_pagination.total if bookmarks_pagination else 0 }}</div>
             <div class="label">Bookmarks</div>
         </button>
@@ -5739,10 +5943,10 @@ PROFILE_HTML_TEMPLATE = """
 <div class="mt-4 animate-fade-in" style="animation-delay: 0.1s;">
     <ul class="nav nav-tabs profile-tabs nav-fill mb-4" id="profileTab" role="tablist">
         <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="bookmarks-tab" data-bs-toggle="tab" data-bs-target="#bookmarks-content" type="button" role="tab" aria-controls="bookmarks-content" aria-selected="true"><i class="fas fa-bookmark me-2" aria-hidden="true"></i>My Bookmarks</button>
+            <button class="nav-link active" id="bookmarks-tab" data-bs-toggle="tab" data-bs-target="#bookmarks-content" type="button" role="tab" aria-controls="bookmarks-content" aria-selected="true"><i class="ph-fill ph-bookmark-simple me-2" aria-hidden="true"></i>My Bookmarks</button>
         </li>
         <li class="nav-item" role="presentation">
-            <button class="nav-link" id="posted-tab" data-bs-toggle="tab" data-bs-target="#posted-content" type="button" role="tab" aria-controls="posted-content" aria-selected="false"><i class="fas fa-pen-to-square me-2" aria-hidden="true"></i>My Articles</button>
+            <button class="nav-link" id="posted-tab" data-bs-toggle="tab" data-bs-target="#posted-content" type="button" role="tab" aria-controls="posted-content" aria-selected="false"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>My Articles</button>
         </li>
     </ul>
     <div class="tab-content" id="profileTabContent">
@@ -5754,17 +5958,17 @@ PROFILE_HTML_TEMPLATE = """
                     <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ (loop.index0 * 0.05)|round(2) }}s">
                         <div class="article-image-container {% if not art.urlToImage %}img-fallback{% endif %}">
                             <a href="{{ art.article_url }}" tabindex="-1" aria-hidden="true">{% if art.urlToImage %}<img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
-                            <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                            <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
                             {% if art.is_stale_bookmark %}<span class="badge bg-secondary position-absolute top-0 end-0 m-2">Cached Bookmark</span>{% endif %}
                         </div>
                         <div class="article-body d-flex flex-column">
                             <h3 class="article-title mb-2"><a href="{{ art.article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
                             <div class="article-meta small mb-2">
-                                <span class="meta-item text-muted"><i class="fas fa-{{ 'user-edit' if art.is_community_article else 'building' }}" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
-                                <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
+                                <span class="meta-item text-muted"><i class="ph ph-{{ 'user-circle' if art.is_community_article else 'buildings' }}" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
+                                <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                             </div>
                             <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                            <a href="{{ art.article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
+                            <a href="{{ art.article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                         </div>
                     </article>
                 </div>
@@ -5772,7 +5976,7 @@ PROFILE_HTML_TEMPLATE = """
             </div>
             {% else %}
                 <div class="state-card">
-                    <div class="state-card-icon"><i class="fas fa-bookmark" aria-hidden="true"></i></div>
+                    <div class="state-card-icon"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></div>
                     <h2 class="state-card-title">No Bookmarks Yet</h2>
                     <p class="state-card-text">Find an article you like and tap the bookmark icon to save it here.</p>
                     <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Browse Articles</a></div>
@@ -5798,16 +6002,16 @@ PROFILE_HTML_TEMPLATE = """
                         {% set article_url = url_for('article_detail', article_hash_id=art.article_hash_id) %}
                         <div class="article-image-container {% if not art.image_url %}img-fallback{% endif %}">
                             <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if art.image_url %}<img src="{{ art.image_url }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
-                            <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                            <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
                         </div>
                         <div class="article-body d-flex flex-column">
                             <h3 class="article-title mb-2"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
                             <div class="article-meta small mb-2">
-                                <span class="meta-item text-muted"><i class="fas fa-user-edit" aria-hidden="true"></i> {{ art.author.name|truncate(20) }}</span>
-                                <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ art.published_at | to_ist }}</span>
+                                <span class="meta-item text-muted"><i class="ph ph-user-circle" aria-hidden="true"></i> {{ art.author.name|truncate(20) }}</span>
+                                <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ art.published_at | to_ist }}</span>
                             </div>
                             <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                            <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
+                            <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                         </div>
                     </article>
                 </div>
@@ -5815,28 +6019,35 @@ PROFILE_HTML_TEMPLATE = """
             </div>
             {% else %}
                 <div class="state-card">
-                    <div class="state-card-icon"><i class="fas fa-pen-to-square" aria-hidden="true"></i></div>
+                    <div class="state-card-icon"><i class="ph ph-note-pencil" aria-hidden="true"></i></div>
                     <h2 class="state-card-title">Nothing Posted Yet</h2>
                     <p class="state-card-text">Share your first story with the BrieflyAI community &mdash; it only takes a minute.</p>
-                    <div class="state-card-actions"><button type="button" class="btn btn-primary-modal" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="fas fa-pen-to-square me-2" aria-hidden="true"></i>Write a Post</button></div>
+                    <div class="state-card-actions"><button type="button" class="btn btn-primary-modal" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>Write a Post</button></div>
                 </div>
             {% endif %}
         </div>
     </div>
 </div>
 <section class="mt-5 pt-4 border-top" aria-labelledby="accountHeading">
-    <h2 class="section-heading h5 mb-3" id="accountHeading"><i class="fas fa-user-gear me-2" aria-hidden="true"></i>Your account &amp; data</h2>
+    <h2 class="section-heading h5 mb-3" id="accountHeading"><i class="ph ph-user-gear me-2" aria-hidden="true"></i>Your account &amp; data</h2>
     <div class="row g-3">
-        <div class="col-md-6 d-flex">
+        <div class="col-lg-4 col-md-6 d-flex">
             <div class="contact-card text-start w-100">
-                <h3 class="h6 mb-2"><i class="fas fa-download me-2" aria-hidden="true"></i>Download your data</h3>
+                <h3 class="h6 mb-2"><i class="ph ph-chat-circle-text me-2" aria-hidden="true"></i>Share your experience</h3>
+                <p class="small text-muted mb-3">Tell other readers what BrieflyAI does for you. Approved notes appear on our welcome page.</p>
+                <a href="{{ url_for('share_testimonial') }}" class="btn btn-sm btn-outline-primary">Write a note</a>
+            </div>
+        </div>
+        <div class="col-lg-4 col-md-6 d-flex">
+            <div class="contact-card text-start w-100">
+                <h3 class="h6 mb-2"><i class="ph ph-download-simple me-2" aria-hidden="true"></i>Download your data</h3>
                 <p class="small text-muted mb-3">Get a JSON copy of your profile, articles, comments and bookmarks.</p>
                 <a href="{{ url_for('export_my_data') }}" class="btn btn-sm btn-outline-primary">Export my data</a>
             </div>
         </div>
-        <div class="col-md-6 d-flex">
+        <div class="col-lg-4 col-md-6 d-flex">
             <div class="contact-card text-start w-100">
-                <h3 class="h6 mb-2"><i class="fas fa-triangle-exclamation me-2" aria-hidden="true"></i>Delete your account</h3>
+                <h3 class="h6 mb-2"><i class="ph ph-warning me-2" aria-hidden="true"></i>Delete your account</h3>
                 <p class="small text-muted mb-3">Permanently removes your account, articles, comments and bookmarks. This cannot be undone.</p>
                 <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#deleteAccountModal">Delete account</button>
             </div>
@@ -5858,7 +6069,7 @@ PROFILE_HTML_TEMPLATE = """
                     <p class="small text-muted">Consider <a href="{{ url_for('export_my_data') }}">exporting your data</a> first.</p>
                     <label for="deleteAccountPassword" class="form-label fw-medium">Confirm your password</label>
                     <div class="input-group-icon">
-                        <i class="fas fa-lock input-icon" aria-hidden="true"></i>
+                        <i class="ph ph-lock input-icon" aria-hidden="true"></i>
                         <input type="password" class="form-control" id="deleteAccountPassword" name="password" required autocomplete="current-password">
                     </div>
                 </div>
@@ -5911,15 +6122,15 @@ PUBLIC_PROFILE_HTML_TEMPLATE = """
                 {% set article_url = url_for('article_detail', article_hash_id=art.article_hash_id) %}
                 <div class="article-image-container {% if not art.image_url %}img-fallback{% endif %}">
                     <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if art.image_url %}<img src="{{ art.image_url }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
-                    <div class="img-fallback-icon" aria-hidden="true"><i class="fas fa-newspaper"></i></div>
+                    <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
                 </div>
                 <div class="article-body d-flex flex-column">
                     <h3 class="article-title mb-2"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
                     <div class="article-meta small mb-2">
-                        <span class="meta-item text-muted"><i class="far fa-calendar-alt" aria-hidden="true"></i> {{ art.published_at | to_ist }}</span>
+                        <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ art.published_at | to_ist }}</span>
                     </div>
                     <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                    <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="fas fa-chevron-right ms-1 small" aria-hidden="true"></i></a>
+                    <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                 </div>
             </article>
         </div>
@@ -5927,7 +6138,7 @@ PUBLIC_PROFILE_HTML_TEMPLATE = """
     {% else %}
         <div class="col-12">
             <div class="state-card">
-                <div class="state-card-icon"><i class="fas fa-pen-to-square" aria-hidden="true"></i></div>
+                <div class="state-card-icon"><i class="ph ph-note-pencil" aria-hidden="true"></i></div>
                 <h2 class="state-card-title">No Articles Yet</h2>
                 <p class="state-card-text">{{ user.name }} hasn't posted any articles yet. Check back soon.</p>
                 <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Explore Other Articles</a></div>
@@ -5951,17 +6162,17 @@ ABOUT_US_HTML_TEMPLATE = """
             Welcome to BrieflyAI, your premier destination for the latest news from India and around the world, delivered in a concise and easy-to-digest format. We leverage the power of cutting-edge AI to summarize complex news articles into key takeaways, saving you time while keeping you informed.
         </p>
 
-        <h2><i class="icon fas fa-bullseye" aria-hidden="true"></i>Our Mission</h2>
+        <h2><i class="icon ph ph-target" aria-hidden="true"></i>Our Mission</h2>
         <p>
             In a world of information overload, our mission is to provide clarity and efficiency. We believe that everyone deserves access to accurate, unbiased news without spending hours sifting through lengthy articles. BrieflyAI cuts through the noise, offering insightful summaries that matter.
         </p>
 
-        <h2><i class="icon fas fa-users" aria-hidden="true"></i>Community Hub</h2>
+        <h2><i class="icon ph ph-users" aria-hidden="true"></i>Community Hub</h2>
         <p>
             Beyond AI-driven news, BrieflyAI is a platform for discussion and community engagement. Our Community Hub allows users to post their own articles, share perspectives, and engage in meaningful conversations about the topics that shape our world. We are committed to fostering a respectful and intelligent environment for all our members.
         </p>
 
-        <h2><i class="icon fas fa-microchip" aria-hidden="true"></i>Our Technology</h2>
+        <h2><i class="icon ph ph-cpu" aria-hidden="true"></i>Our Technology</h2>
         <p>
             We use state-of-the-art Natural Language Processing (NLP) models to analyze and summarize news content from trusted sources. Our system is designed to identify the most crucial points of an article, presenting them as a quick summary and a list of key takeaways, ensuring you get the essence of the story in seconds.
         </p>
@@ -5984,7 +6195,7 @@ CONTACT_HTML_TEMPLATE = """
         <div class="row g-4">
             <div class="col-md-6">
                 <div class="contact-card">
-                    <div class="icon"><i class="fas fa-envelope" aria-hidden="true"></i></div>
+                    <div class="icon"><i class="ph ph-envelope" aria-hidden="true"></i></div>
                     <h2 class="h5">General Inquiries</h2>
                     <p class="text-muted">For general questions, feedback, or support, please email us at:</p>
                     <a href="mailto:vbansal639@gmail.com" class="fw-bold">vbansal639@gmail.com</a>
@@ -5992,7 +6203,7 @@ CONTACT_HTML_TEMPLATE = """
             </div>
             <div class="col-md-6">
                 <div class="contact-card">
-                    <div class="icon"><i class="fas fa-handshake" aria-hidden="true"></i></div>
+                    <div class="icon"><i class="ph ph-handshake" aria-hidden="true"></i></div>
                     <h2 class="h5">Partnerships &amp; Media</h2>
                     <p class="text-muted">For partnership opportunities or media inquiries, please contact us at:</p>
                     <a href="mailto:vbansal639@gmail.com" class="fw-bold">vbansal639@gmail.com</a>
@@ -6004,10 +6215,10 @@ CONTACT_HTML_TEMPLATE = """
             <h2 class="h3">Follow Us</h2>
             <p class="text-muted">Stay connected with us on social media.</p>
             <div class="contact-social-links mt-3">
-                <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="fab fa-twitter" aria-hidden="true"></i></a>
-                <a href="#" title="Facebook" aria-label="BrieflyAI on Facebook"><i class="fab fa-facebook-f" aria-hidden="true"></i></a>
-                <a href="#" title="LinkedIn" aria-label="BrieflyAI on LinkedIn"><i class="fab fa-linkedin-in" aria-hidden="true"></i></a>
-                <a href="#" title="Instagram" aria-label="BrieflyAI on Instagram"><i class="fab fa-instagram" aria-hidden="true"></i></a>
+                <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="ph ph-x-logo" aria-hidden="true"></i></a>
+                <a href="#" title="Facebook" aria-label="BrieflyAI on Facebook"><i class="ph ph-facebook-logo" aria-hidden="true"></i></a>
+                <a href="#" title="LinkedIn" aria-label="BrieflyAI on LinkedIn"><i class="ph ph-linkedin-logo" aria-hidden="true"></i></a>
+                <a href="#" title="Instagram" aria-label="BrieflyAI on Instagram"><i class="ph ph-instagram-logo" aria-hidden="true"></i></a>
             </div>
         </div>
     </div>
@@ -6023,13 +6234,13 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
         <h1>Privacy Policy</h1>
     </div>
     <div class="static-content-container">
-        <p class="text-muted">Last updated: June 10, 2025</p>
+        <p class="text-muted">Last updated: November 6, 2026</p>
         <p>BrieflyAI ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you visit our website.</p>
 
-        <h2><i class="icon fas fa-shield-halved" aria-hidden="true"></i>1. Information We Collect</h2>
-        <p>We may collect personal information that you voluntarily provide to us when you register on the website, post articles or comments, bookmark articles, or subscribe to our newsletter. This information may include your name, username, email address, and your activities on our platform such as articles posted and bookmarked.</p>
+        <h2><i class="icon ph ph-shield-check" aria-hidden="true"></i>1. Information We Collect</h2>
+        <p>We may collect personal information that you voluntarily provide to us when you register on the website, post articles or comments, bookmark articles, send a testimonial, or subscribe to our newsletter. This information may include your name, username, email address, and your activities on our platform such as articles posted and bookmarked.</p>
 
-        <h2><i class="icon fas fa-tasks" aria-hidden="true"></i>2. How We Use Your Information</h2>
+        <h2><i class="icon ph ph-list-checks" aria-hidden="true"></i>2. How We Use Your Information</h2>
         <p>We use the information we collect to:</p>
         <ul>
             <li>Create and manage your account.</li>
@@ -6037,19 +6248,20 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
             <li>Display your posted and bookmarked articles as part of your profile.</li>
             <li>Send you newsletters or promotional materials, if you have opted in.</li>
             <li>Respond to your comments and inquiries.</li>
+            <li>Show testimonials on our website, only after you agree and we have reviewed them.</li>
             <li>Improve our website and services.</li>
         </ul>
 
-        <h2><i class="icon fas fa-share-nodes" aria-hidden="true"></i>3. Disclosure of Your Information</h2>
+        <h2><i class="icon ph ph-share-network" aria-hidden="true"></i>3. Disclosure of Your Information</h2>
         <p>Your username and posted articles are publicly visible. Your bookmarked articles are visible on your profile page to you when logged in. We do not sell, trade, or otherwise transfer your personally identifiable information like your email address to outside parties without your consent, except to trusted third parties who assist us in operating our website, so long as those parties agree to keep this information confidential.</p>
 
-        <h2><i class="icon fas fa-lock" aria-hidden="true"></i>4. Security of Your Information</h2>
+        <h2><i class="icon ph ph-lock" aria-hidden="true"></i>4. Security of Your Information</h2>
         <p>We use administrative, technical, and physical security measures to help protect your personal information. While we have taken reasonable steps to secure the personal information you provide to us, please be aware that despite our efforts, no security measures are perfect or impenetrable.</p>
 
-        <h2><i class="icon fas fa-edit" aria-hidden="true"></i>5. Your Choices</h2>
+        <h2><i class="icon ph ph-pencil-simple-line" aria-hidden="true"></i>5. Your Choices</h2>
         <p>You can review and change your profile information by logging into your account. You may also request deletion of your account and associated data by contacting us.</p>
 
-        <h2><i class="icon fas fa-sync-alt" aria-hidden="true"></i>6. Changes to This Privacy Policy</h2>
+        <h2><i class="icon ph ph-arrows-clockwise" aria-hidden="true"></i>6. Changes to This Privacy Policy</h2>
         <p>We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page. You are advised to review this Privacy Policy periodically for any changes.</p>
     </div>
 </div>
@@ -6057,37 +6269,268 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
 """
 ERROR_404_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}404 Not Found - BrieflyAI{% endblock %}{% block content %}
 <div class="state-card state-card-narrow animate-fade-in">
-    <div class="state-card-icon"><i class="fas fa-map-signs" aria-hidden="true"></i></div>
+    <div class="state-card-icon"><i class="ph ph-signpost" aria-hidden="true"></i></div>
     <h1 class="state-card-title">Page Not Found</h1>
     <p class="state-card-text">Sorry, the page you're looking for doesn't exist or may have been moved.</p>
     <div class="state-card-actions">
-        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="fas fa-house me-2" aria-hidden="true"></i>Go to Homepage</a>
+        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="ph ph-house me-2" aria-hidden="true"></i>Go to Homepage</a>
     </div>
 </div>
 {% endblock %}"""
 
 ERROR_500_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}500 Server Error - BrieflyAI{% endblock %}{% block content %}
 <div class="state-card state-card-narrow state-card-danger animate-fade-in">
-    <div class="state-card-icon"><i class="fas fa-server" aria-hidden="true"></i></div>
+    <div class="state-card-icon"><i class="ph ph-hard-drives" aria-hidden="true"></i></div>
     <h1 class="state-card-title">Something Went Wrong</h1>
     <p class="state-card-text">We hit a snag on our end. We've been notified and are looking into it.</p>
     <div class="state-card-actions">
-        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="fas fa-house me-2" aria-hidden="true"></i>Go to Homepage</a>
-        <button type="button" class="btn btn-outline-secondary" onclick="window.location.reload()"><i class="fas fa-rotate-right me-2" aria-hidden="true"></i>Try Again</button>
+        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="ph ph-house me-2" aria-hidden="true"></i>Go to Homepage</a>
+        <button type="button" class="btn btn-outline-secondary" onclick="window.location.reload()"><i class="ph ph-arrow-clockwise me-2" aria-hidden="true"></i>Try Again</button>
     </div>
 </div>
 {% endblock %}"""
 OFFLINE_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}Offline - BrieflyAI{% endblock %}{% block content %}
 <div class="state-card state-card-narrow animate-fade-in">
-    <div class="state-card-icon"><i class="fas fa-wifi" aria-hidden="true"></i></div>
+    <div class="state-card-icon"><i class="ph ph-wifi-slash" aria-hidden="true"></i></div>
     <h1 class="state-card-title">You're Offline</h1>
     <p class="state-card-text">We couldn't reach the network. Any pages you've already opened are still available, and new stories will load as soon as you're back online.</p>
     <div class="state-card-actions">
-        <button type="button" class="btn btn-primary-modal" onclick="window.location.reload()"><i class="fas fa-rotate-right me-2" aria-hidden="true"></i>Try Again</button>
-        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary"><i class="fas fa-house me-2" aria-hidden="true"></i>Homepage</a>
+        <button type="button" class="btn btn-primary-modal" onclick="window.location.reload()"><i class="ph ph-arrow-clockwise me-2" aria-hidden="true"></i>Try Again</button>
+        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary"><i class="ph ph-house me-2" aria-hidden="true"></i>Homepage</a>
     </div>
 </div>
 {% endblock %}"""
+
+TERMS_HTML_TEMPLATE = """
+{% extends "BASE_HTML_TEMPLATE" %}
+{% block title %}Terms of Service - BrieflyAI{% endblock %}
+{% block meta_description %}The rules for using BrieflyAI: AI summaries, accounts, community posts and testimonials.{% endblock %}
+{% block content %}
+<div class="animate-fade-in">
+    <div class="page-header-static">
+        <h1>Terms of service</h1>
+    </div>
+    <div class="static-content-container">
+        <p class="text-muted">Last updated: {{ terms_updated }}</p>
+        <p>These terms explain the rules for using BrieflyAI. By using the site you agree to them. If you do not agree, please do not use BrieflyAI. Our <a href="{{ url_for('privacy') }}">privacy policy</a> explains how we handle your information.</p>
+
+        <h2><i class="icon ph ph-newspaper" aria-hidden="true"></i>1. What BrieflyAI is</h2>
+        <p>BrieflyAI gathers news stories from public publisher feeds and news services and uses artificial intelligence to write short summaries and key takeaways. It also hosts a Community Hub where registered readers can post articles and comments. BrieflyAI is free to use.</p>
+
+        <h2><i class="icon ph ph-warning" aria-hidden="true"></i>2. AI summaries can be wrong</h2>
+        <p>Summaries and takeaways are generated automatically. They can be incomplete, out of date or simply wrong. They are general information only and are not legal, financial, medical or any other professional advice. Read the original article before relying on a story, and do not make important decisions based on a summary alone.</p>
+
+        <h2><i class="icon ph ph-buildings" aria-hidden="true"></i>3. News belongs to its publishers</h2>
+        <p>Headlines, descriptions and articles shown or linked on BrieflyAI belong to their publishers. BrieflyAI links to the original source and does not claim ownership of publisher content. If you believe something on BrieflyAI infringes your rights, email <a href="mailto:{{ contact_email }}">{{ contact_email }}</a> with the page link and the details, and we will review it.</p>
+
+        <h2><i class="icon ph ph-user-circle" aria-hidden="true"></i>4. Your account</h2>
+        <p>You only need an account to bookmark, comment, react, post or share a testimonial. Keep your password safe, because you are responsible for what happens under your account. Do not impersonate anyone. You can export your data or delete your account at any time from your profile.</p>
+
+        <h2><i class="icon ph ph-chats" aria-hidden="true"></i>5. What you post</h2>
+        <p>You keep ownership of the articles, comments and testimonials you submit. By posting, you allow BrieflyAI to store and show that content on the site and in its feeds, such as RSS, for as long as it stays on BrieflyAI. You confirm you have the right to post it.</p>
+        <p>When you send a testimonial and agree to publish it, you allow BrieflyAI to show it on the website with the name and details you gave. We review every testimonial before it appears, never change your words without asking, and remove it whenever you ask.</p>
+
+        <h2><i class="icon ph ph-shield-check" aria-hidden="true"></i>6. Community rules</h2>
+        <p>Do not post anything that:</p>
+        <ul>
+            <li>is unlawful, defamatory, hateful, harassing or threatening</li>
+            <li>infringes someone else's copyright, trademark or privacy</li>
+            <li>is spam, advertising or deliberately misleading</li>
+            <li>contains malware or links to harmful sites</li>
+        </ul>
+        <p>Content that breaks these rules may be removed, and accounts that keep breaking them may be suspended or deleted. You can report community articles from the article page.</p>
+
+        <h2><i class="icon ph ph-lock" aria-hidden="true"></i>7. Using the site fairly</h2>
+        <p>Do not try to break, overload or get around the security of BrieflyAI, including its rate limits. Do not copy the site's content in bulk or resell it without written permission.</p>
+
+        <h2><i class="icon ph ph-arrows-clockwise" aria-hidden="true"></i>8. Changes</h2>
+        <p>BrieflyAI may change, pause or stop any feature at any time. We may also update these terms. The date at the top shows the current version, and using the site after a change means you accept the updated terms.</p>
+
+        <h2><i class="icon ph ph-scales" aria-hidden="true"></i>9. No warranty and limits of liability</h2>
+        <p>BrieflyAI is provided as is, without warranties of any kind. As far as the law allows, BrieflyAI and its operator are not liable for any loss or damage that comes from using the site, relying on a summary, or not being able to use the site.</p>
+
+        <h2><i class="icon ph ph-globe" aria-hidden="true"></i>10. Governing law</h2>
+        <p>These terms are governed by the laws of India.</p>
+
+        <h2><i class="icon ph ph-envelope-simple" aria-hidden="true"></i>11. Contact</h2>
+        <p>Questions about these terms? Email <a href="mailto:{{ contact_email }}">{{ contact_email }}</a> or use the <a href="{{ url_for('contact') }}">contact page</a>.</p>
+    </div>
+</div>
+{% endblock %}
+"""
+SHARE_TESTIMONIAL_HTML_TEMPLATE = """
+{% extends "BASE_HTML_TEMPLATE" %}
+{% block title %}Share your experience - BrieflyAI{% endblock %}
+{% block content %}
+<div class="animate-fade-in testimonial-page">
+    <div class="page-header-static">
+        <h1>Share your experience</h1>
+        <p class="text-muted mb-0 mt-2">Tell other readers what BrieflyAI does for you. We read every note before it appears on the website.</p>
+    </div>
+    <div class="static-content-container testimonial-form-wrap">
+        {% if mine %}
+        <div class="mb-4">
+            <h2 class="h6 mb-3">Your notes</h2>
+            <ul class="list-unstyled ps-0 d-flex flex-column gap-2 mb-0">
+                {% for t in mine %}
+                <li class="testimonial-mine">
+                    <p class="mb-1">{{ t.quote }}</p>
+                    <span class="testimonial-status testimonial-status-{{ t.status }}">
+                        {% if t.status == 'approved' %}<i class="ph ph-check-circle" aria-hidden="true"></i> Live on the website
+                        {% elif t.status == 'pending' %}<i class="ph ph-hourglass-medium" aria-hidden="true"></i> Waiting for review
+                        {% else %}<i class="ph ph-eye-slash" aria-hidden="true"></i> Not published{% endif %}
+                    </span>
+                </li>
+                {% endfor %}
+            </ul>
+            <p class="small text-muted mt-2 mb-0">Want a note taken down? <a href="{{ url_for('contact') }}">Contact us</a> and we will remove it.</p>
+        </div>
+        {% endif %}
+
+        {% if has_pending %}
+        <div class="state-card state-card-narrow">
+            <div class="state-card-icon"><i class="ph ph-hourglass-medium" aria-hidden="true"></i></div>
+            <h2 class="state-card-title h4">Your note is waiting for review</h2>
+            <p class="state-card-text">You can send another one once this one has been reviewed.</p>
+        </div>
+        {% else %}
+        <form method="POST" action="{{ url_for('share_testimonial') }}" class="needs-validation" id="testimonialForm" novalidate>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="mb-3">
+                <label for="tName" class="form-label fw-medium">Name to show</label>
+                <input type="text" class="form-control" id="tName" name="name" value="{{ form.name }}" maxlength="{{ limits.name }}" required autocomplete="name">
+                <div class="invalid-feedback">Add the name you want shown with your note.</div>
+            </div>
+            <div class="mb-3">
+                <label for="tAttribution" class="form-label fw-medium">About you <span class="text-muted fw-normal">(optional)</span></label>
+                <input type="text" class="form-control" id="tAttribution" name="attribution" value="{{ form.attribution }}" maxlength="{{ limits.attribution }}" placeholder="For example: Student, Pune">
+            </div>
+            <div class="mb-3">
+                <label for="tQuote" class="form-label fw-medium">Your note</label>
+                <textarea class="form-control" id="tQuote" name="quote" rows="4" maxlength="{{ limits.quote }}" minlength="20" required aria-describedby="tQuoteCount">{{ form.quote }}</textarea>
+                <div class="d-flex justify-content-between mt-1">
+                    <div class="invalid-feedback d-block-when-invalid">Write at least 20 characters.</div>
+                    <span class="small text-muted ms-auto" id="tQuoteCount" aria-live="polite">0 / {{ limits.quote }}</span>
+                </div>
+            </div>
+            <div class="form-check mb-4">
+                <input class="form-check-input" type="checkbox" value="yes" id="tConsent" name="consent" required>
+                <label class="form-check-label" for="tConsent">I agree that BrieflyAI may publish this note on its website with the name and details above. I can ask for it to be removed at any time.</label>
+                <div class="invalid-feedback">Please agree so we can publish your note.</div>
+            </div>
+            <button type="submit" class="btn btn-primary">Send for review</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+{% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var form = document.getElementById('testimonialForm');
+    if (!form) { return; }
+    var quote = document.getElementById('tQuote');
+    var count = document.getElementById('tQuoteCount');
+    var max = quote.getAttribute('maxlength');
+    var update = function () { count.textContent = quote.value.length + ' / ' + max; };
+    quote.addEventListener('input', update);
+    update();
+    form.addEventListener('submit', function (e) {
+        if (!form.checkValidity()) {
+            e.preventDefault();
+            e.stopPropagation();
+            var firstInvalid = form.querySelector(':invalid');
+            if (firstInvalid) { firstInvalid.focus(); }
+        }
+        form.classList.add('was-validated');
+    });
+});
+</script>
+{% endblock %}
+"""
+ADMIN_TESTIMONIALS_HTML_TEMPLATE = """
+{% extends "BASE_HTML_TEMPLATE" %}
+{% block title %}Testimonials - Admin - BrieflyAI{% endblock %}
+{% block content %}
+<div class="animate-fade-in testimonial-page">
+    <div class="page-header-static">
+        <h1>Testimonials</h1>
+        <p class="text-muted mb-0 mt-2">Approved notes appear on the <a href="{{ url_for('landing') }}#readers">landing page</a>, newest first.</p>
+    </div>
+
+    <div class="static-content-container mb-4">
+        <h2 class="h5 mb-3"><i class="ph ph-plus-circle me-2" aria-hidden="true"></i>Add a quote you received</h2>
+        <p class="small text-muted">For notes that reached you by email or message. Only add a quote with the reader's permission, in their own words.</p>
+        <form method="POST" action="{{ url_for('admin_add_testimonial') }}" class="needs-validation" id="adminTestimonialForm" novalidate>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="aName" class="form-label fw-medium">Reader's name</label>
+                    <input type="text" class="form-control" id="aName" name="name" maxlength="{{ limits.name }}" required>
+                    <div class="invalid-feedback">Name is required.</div>
+                </div>
+                <div class="col-md-6">
+                    <label for="aAttribution" class="form-label fw-medium">About them <span class="text-muted fw-normal">(optional)</span></label>
+                    <input type="text" class="form-control" id="aAttribution" name="attribution" maxlength="{{ limits.attribution }}" placeholder="For example: Teacher, Jaipur">
+                </div>
+                <div class="col-12">
+                    <label for="aQuote" class="form-label fw-medium">Quote</label>
+                    <textarea class="form-control" id="aQuote" name="quote" rows="3" maxlength="{{ limits.quote }}" minlength="20" required></textarea>
+                    <div class="invalid-feedback">Quote must be at least 20 characters.</div>
+                </div>
+                <div class="col-12 form-check ms-1">
+                    <input class="form-check-input" type="checkbox" value="yes" id="aPermission" name="permission" required>
+                    <label class="form-check-label" for="aPermission">This reader gave permission to publish this quote with their name.</label>
+                    <div class="invalid-feedback">Permission is required.</div>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary mt-3">Add and publish</button>
+        </form>
+    </div>
+
+    {% for group, label, empty in [('pending', 'Waiting for review', 'Nothing to review.'), ('approved', 'Live on the website', 'No approved notes yet.'), ('rejected', 'Not published', 'Nothing here.')] %}
+    <section class="mb-4" aria-labelledby="group-{{ group }}">
+        <h2 class="section-heading h5 mb-3" id="group-{{ group }}">{{ label }} <span class="text-muted fw-normal">({{ groups[group]|length }})</span></h2>
+        {% if groups[group] %}
+        <div class="row g-3">
+            {% for t in groups[group] %}
+            <div class="col-md-6 d-flex">
+                <div class="contact-card text-start w-100 d-flex flex-column">
+                    <p class="mb-2">{{ t.quote }}</p>
+                    <p class="small text-muted mb-3">{{ t.name }}{% if t.attribution %}, {{ t.attribution }}{% endif %} · {{ 'Sent by reader @' ~ t.user.username if t.user else 'Added by admin' }} · {{ t.created_at | to_ist }}</p>
+                    <div class="d-flex flex-wrap gap-2 mt-auto">
+                        {% if t.status != 'approved' %}
+                        <form method="POST" action="{{ url_for('admin_review_testimonial', testimonial_id=t.id, action='approve') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-primary" type="submit"><i class="ph ph-check me-1" aria-hidden="true"></i>Approve</button></form>
+                        {% endif %}
+                        {% if t.status != 'rejected' %}
+                        <form method="POST" action="{{ url_for('admin_review_testimonial', testimonial_id=t.id, action='reject') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-secondary" type="submit"><i class="ph ph-eye-slash me-1" aria-hidden="true"></i>{{ 'Unpublish' if t.status == 'approved' else 'Reject' }}</button></form>
+                        {% endif %}
+                        <form method="POST" action="{{ url_for('admin_review_testimonial', testimonial_id=t.id, action='delete') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-danger" type="submit"><i class="ph ph-trash me-1" aria-hidden="true"></i>Delete</button></form>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-muted">{{ empty }}</p>
+        {% endif %}
+    </section>
+    {% endfor %}
+</div>
+{% endblock %}
+{% block scripts_extra %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    var form = document.getElementById('adminTestimonialForm');
+    if (!form) { return; }
+    form.addEventListener('submit', function (e) {
+        if (!form.checkValidity()) { e.preventDefault(); e.stopPropagation(); }
+        form.classList.add('was-validated');
+    });
+});
+</script>
+{% endblock %}
+"""
 
 # Landing page (/welcome). A raw string, so the CSS escapes in class names like
 # .md\:heading-2 reach the browser untouched.
@@ -6584,6 +7027,35 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         .faq-item[open] .faq-answer { animation: faq-in var(--duration-layout) var(--ease); }
         @keyframes faq-in { from { opacity: 0; transform: translateY(calc(var(--spacing-75) * -1)); } to { opacity: 1; transform: none; } }
 
+        /* --- Testimonials --- */
+        .quotes { display: grid; gap: var(--spacing-300); }
+        @media (min-width: 768px) { .quotes { grid-template-columns: repeat(2, 1fr); } }
+        @media (min-width: 1024px) { .quotes { grid-template-columns: repeat(3, 1fr); } }
+        .quote-card {
+            margin: 0; display: flex; flex-direction: column; gap: var(--spacing-300);
+            padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface);
+        }
+        @media (min-width: 768px) { .quote-card { padding: var(--spacing-400); } }
+        .quote-card blockquote { margin: 0; }
+        .quote-person { margin-top: auto; display: flex; align-items: center; gap: var(--spacing-100); }
+        .quote-name, .quote-detail { display: block; }
+        .quote-detail { margin-top: var(--spacing-25); }
+        .avatar {
+            display: inline-flex; align-items: center; justify-content: center; flex: none;
+            width: 40px; height: 40px; border-radius: var(--rounded-full);
+            background: var(--tile-bg); border: 1px solid var(--border);
+        }
+        .quotes-foot { margin-top: var(--spacing-400); }
+        .quotes-empty {
+            display: flex; flex-direction: column; align-items: flex-start; gap: var(--spacing-300);
+            padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface);
+        }
+        .quotes-empty-text p { margin-top: var(--spacing-75); }
+        @media (min-width: 768px) {
+            .quotes-empty { flex-direction: row; align-items: center; padding: var(--spacing-400); }
+            .quotes-empty-text { flex: 1; }
+        }
+
         /* --- Final CTA --- */
         .cta-panel {
             padding: var(--spacing-600) var(--spacing-300);
@@ -6646,6 +7118,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     <symbol id="ph-plus" viewBox="0 0 256 256"><path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/></symbol>
     <symbol id="ph-shield-check" viewBox="0 0 256 256"><path d="M208,40H48A16,16,0,0,0,32,56v56c0,52.72,25.52,84.67,46.93,102.19,23.06,18.86,46,25.26,47,25.53a8,8,0,0,0,4.2,0c1-.27,23.91-6.67,47-25.53C198.48,196.67,224,164.72,224,112V56A16,16,0,0,0,208,40Zm0,72c0,37.07-13.66,67.16-40.6,89.42A129.3,129.3,0,0,1,128,223.62a128.25,128.25,0,0,1-38.92-21.81C61.82,179.51,48,149.3,48,112l0-56,160,0ZM82.34,141.66a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32l-56,56a8,8,0,0,1-11.32,0Z"/></symbol>
     <symbol id="ph-rss-simple" viewBox="0 0 256 256"><path d="M224,192a8,8,0,0,1-16,0c0-79.4-64.6-144-144-144a8,8,0,0,1,0-16C152.22,32,224,103.78,224,192ZM64,104a8,8,0,0,0,0,16,72.08,72.08,0,0,1,72,72,8,8,0,0,0,16,0A88.1,88.1,0,0,0,64,104Zm4,72a12,12,0,1,0,12,12A12,12,0,0,0,68,176Z"/></symbol>
+    <symbol id="ph-quotes-fill" viewBox="0 0 256 256"><path d="M116,72v88a48.05,48.05,0,0,1-48,48,8,8,0,0,1,0-16,32,32,0,0,0,32-32v-8H40a16,16,0,0,1-16-16V72A16,16,0,0,1,40,56h60A16,16,0,0,1,116,72ZM216,56H156a16,16,0,0,0-16,16v64a16,16,0,0,0,16,16h60v8a32,32,0,0,1-32,32,8,8,0,0,0,0,16,48.05,48.05,0,0,0,48-48V72A16,16,0,0,0,216,56Z"/></symbol>
+    <symbol id="ph-chat-circle-text" viewBox="0 0 256 256"><path d="M168,112a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,112Zm-8,24H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16Zm72-8A104,104,0,0,1,79.12,219.82L45.07,231.17a16,16,0,0,1-20.24-20.24l11.35-34.05A104,104,0,1,1,232,128Zm-16,0A88,88,0,1,0,51.81,172.06a8,8,0,0,1,.66,6.54L40,216,77.4,203.53a7.85,7.85,0,0,1,2.53-.42,8,8,0,0,1,4,1.08A88,88,0,0,0,216,128Z"/></symbol>
 </svg>
 
     <a class="skip-link button-sm" href="#main">Skip to content</a>
@@ -6883,6 +7357,43 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             </div>
         </section>
 
+        {# ================= TESTIMONIALS ================= #}
+        <section class="section" id="readers" aria-labelledby="readers-title">
+            <div class="container">
+                <div class="section-head" data-reveal>
+                    <p class="eyebrow caption-3">Readers</p>
+                    <h2 class="heading-4 md:heading-2" id="readers-title">What readers say</h2>
+                </div>
+                {% if testimonials %}
+                <div class="quotes">
+                    {% for t in testimonials %}
+                    <figure class="quote-card" data-reveal>
+                        <svg class="icon icon-lg accent" aria-hidden="true"><use href="#ph-quotes-fill"></use></svg>
+                        <blockquote class="body-3 md:body-7">{{ t.quote }}</blockquote>
+                        <figcaption class="quote-person">
+                            <span class="avatar title-4" aria-hidden="true">{{ t.initials }}</span>
+                            <span>
+                                <span class="quote-name title-4">{{ t.name }}</span>
+                                {% if t.detail %}<span class="quote-detail caption-5 subtle">{{ t.detail }}</span>{% endif %}
+                            </span>
+                        </figcaption>
+                    </figure>
+                    {% endfor %}
+                </div>
+                <p class="quotes-foot body-6 muted" data-reveal>Read BrieflyAI often? <a class="text-link" href="{{ url_for('share_testimonial') }}">Share your experience</a></p>
+                {% else %}
+                <div class="quotes-empty" data-reveal>
+                    <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-chat-circle-text"></use></svg></span>
+                    <div class="quotes-empty-text">
+                        <h3 class="title-1">Reader notes will appear here</h3>
+                        <p class="body-3 muted">We only publish quotes from real readers who agree to be featured. Read BrieflyAI often? Tell other readers what it does for you.</p>
+                    </div>
+                    <a class="btn btn-ghost button-md" href="{{ url_for('share_testimonial') }}">Share your experience</a>
+                </div>
+                {% endif %}
+            </div>
+        </section>
+
         {# ================= PROOF ================= #}
         <section class="section" id="sources" aria-labelledby="sources-title">
             <div class="container proof">
@@ -6913,12 +7424,6 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                         <span class="caption-5">In popular stories and yesterday's headlines</span>
                     </div>
                 </div>
-                {#
-                  TESTIMONIALS: add real reader quotes here once you have them, with the reader's
-                  permission. Never publish invented quotes. Suggested markup:
-                  <figure class="source-tile"><blockquote class="body-3">{{ testimonial }}</blockquote>
-                  <figcaption class="caption-4 subtle">{{ reader_name }}, {{ reader_city }}</figcaption></figure>
-                #}
             </div>
         </section>
 
@@ -6986,6 +7491,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                         <li><a href="{{ url_for('about') }}">About</a></li>
                         <li><a href="{{ url_for('contact') }}">Contact</a></li>
                         <li><a href="{{ url_for('privacy') }}">Privacy policy</a></li>
+                        <li><a href="{{ url_for('terms') }}">Terms of service</a></li>
                     </ul>
                 </nav>
             </div>
@@ -7144,6 +7650,9 @@ template_storage['_COMMENT_TEMPLATE'] = _COMMENT_TEMPLATE
 template_storage['PUBLIC_PROFILE_HTML_TEMPLATE'] = PUBLIC_PROFILE_HTML_TEMPLATE
 template_storage['OFFLINE_TEMPLATE'] = OFFLINE_TEMPLATE
 template_storage['LANDING_HTML_TEMPLATE'] = LANDING_HTML_TEMPLATE
+template_storage['TERMS_HTML_TEMPLATE'] = TERMS_HTML_TEMPLATE
+template_storage['SHARE_TESTIMONIAL_HTML_TEMPLATE'] = SHARE_TESTIMONIAL_HTML_TEMPLATE
+template_storage['ADMIN_TESTIMONIALS_HTML_TEMPLATE'] = ADMIN_TESTIMONIALS_HTML_TEMPLATE
 
 
 # ==============================================================================
