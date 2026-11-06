@@ -3416,8 +3416,8 @@ DEFAULT_RSS_FEEDS = [
     ("https://feeds.feedburner.com/ndtvnews-top-stories", "india"),
     ("https://indianexpress.com/section/india/feed/", "india"),
     ("https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml", "india"),
-    ("https://timesofindia.indiatimes.com/rssfeedstopstories.cms", "india"),
-    ("https://www.indiatoday.in/rss/home", "india"),
+    ("https://timesofindia.indiatimes.com/rssfeedstopstories.cms", None),  # mixed India and world
+    ("https://www.indiatoday.in/rss/home", None),                           # mixed, all sections
     ("https://economictimes.indiatimes.com/rssfeedstopstories.cms", "business"),
     ("https://www.livemint.com/rss/news", "business"),
     ("https://www.thehindu.com/business/feeder/default.rss", "business"),
@@ -3430,6 +3430,10 @@ DEFAULT_RSS_FEEDS = [
     ("https://indianexpress.com/section/entertainment/feed/", "entertainment"),
     ("https://www.hindustantimes.com/feeds/rss/entertainment/rssfeed.xml", "entertainment"),
 ]
+
+# National desks: their stories lead the news page ahead of mixed "top stories" feeds.
+LEAD_FEEDS = ('thehindu.com/news/national', 'ndtvnews-top-stories', 'indianexpress.com/section/india',
+              'hindustantimes.com/feeds/rss/india-news')
 
 _SOURCE_NAMES = (
     ('thehindu.com', 'The Hindu'), ('ndtv', 'NDTV'), ('indianexpress.com', 'Indian Express'),
@@ -3445,7 +3449,7 @@ LATEST_KEEP = int(os.environ.get('LATEST_KEEP', '600'))
 
 
 def _rss_feeds():
-    """[(url, topic)]. RSS_FEEDS overrides: comma separated "url" or "url|topic"."""
+    """[(url, topic)]. RSS_FEEDS overrides: comma separated "url" or "url|topic" (no topic: mixed feed)."""
     configured = os.environ.get('RSS_FEEDS', '').strip()
     if not configured:
         return DEFAULT_RSS_FEEDS
@@ -3456,7 +3460,7 @@ def _rss_feeds():
             continue
         url, _, topic = entry.partition('|')
         topic = topic.strip().lower()
-        feeds.append((url.strip(), topic if topic in TOPIC_LABELS else 'india'))
+        feeds.append((url.strip(), topic if topic in TOPIC_LABELS else None))
     return feeds
 
 
@@ -3540,8 +3544,8 @@ def _fetch_feed(feed_url, topic, limit=30):
             'description': (description or html.unescape(title))[:600],
             'url': link[:990], 'urlToImage': _extract_rss_image(item),
             'publishedAt': published.isoformat(), 'source': {'name': source_name},
-            'topic': topic, 'is_community_article': False,
-            'groq_summary': None, 'groq_takeaways': None,
+            'topic': topic, 'lead': any(needle in feed_url for needle in LEAD_FEEDS),
+            'is_community_article': False, 'groq_summary': None, 'groq_takeaways': None,
         })
     return articles
 
@@ -3786,11 +3790,18 @@ def most_read_articles(limit=30, days=3):
 
 
 def pick_featured(articles):
-    """Newest story with a photo from the last six hours, else the newest with a photo."""
+    """
+    The lead story: the newest with a photo from a national desk in the last six hours, then
+    any India, world or business story with a photo, then the newest with a photo.
+    """
     cutoff = _utcnow() - timedelta(hours=6)
     with_photo = [a for a in articles if a.get('urlToImage')]
-    for art in with_photo:
-        if (_parse_iso(art.get('publishedAt')) or cutoff) >= cutoff and art.get('topic') in ('india', 'world', 'business'):
+    recent = [a for a in with_photo if (_parse_iso(a.get('publishedAt')) or cutoff) >= cutoff]
+    for art in recent:
+        if art.get('lead'):
+            return art
+    for art in recent:
+        if art.get('topic') in ('india', 'world', 'business'):
             return art
     return with_photo[0] if with_photo else (articles[0] if articles else None)
 
