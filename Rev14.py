@@ -143,7 +143,12 @@ if database_url and (database_url.startswith("postgres://") or database_url.star
     else: # Already starts with "postgresql://"
         configured_db_uri = database_url
         app.logger.info(f"DATABASE_URL already uses 'postgresql://' scheme.")
-    
+
+    # Name the driver explicitly. SQLAlchemy 2.1 made psycopg (v3) the default for a bare
+    # 'postgresql://' URL, but this app installs psycopg2-binary, so an unpinned fresh build
+    # crashed at startup with "No module named 'psycopg'".
+    configured_db_uri = configured_db_uri.replace("postgresql://", "postgresql+psycopg2://", 1)
+
     app.config['SQLALCHEMY_DATABASE_URI'] = configured_db_uri
     uri_to_log = configured_db_uri
     try:
