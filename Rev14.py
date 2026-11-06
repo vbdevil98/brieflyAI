@@ -131,6 +131,10 @@ ADS_ENDPOINTS = {'index', 'article_detail', 'search_results'} | ({'landing'} if 
 # Google Analytics 4 measurement id; set GA_MEASUREMENT_ID to "off" to remove analytics.
 _ga = (os.environ.get('GA_MEASUREMENT_ID') or 'G-CV5LWJ7NQ7').strip()
 GA_MEASUREMENT_ID = _ga if re.fullmatch(r'G-[A-Z0-9]{4,16}', _ga) else ''
+# Sign in with Google. The client ID is public (it appears in the page), so it is a plain
+# setting; nothing secret is needed because Google's signed ID token is checked here.
+_gcid = (os.environ.get('GOOGLE_CLIENT_ID') or '').strip()
+GOOGLE_CLIENT_ID = _gcid if re.fullmatch(r'[0-9]+-[0-9A-Za-z_]+\.apps\.googleusercontent\.com', _gcid) else ''
 ADS_TXT_EXTRA = [line.strip() for line in re.split(r'[;\n]', os.environ.get('ADS_TXT_EXTRA') or '') if line.strip()]
 app.config['PER_PAGE'] = 9
 app.config['CATEGORIES'] = ['All Articles', 'Popular Stories', "Yesterday's Headlines", 'Community Hub']
@@ -1531,7 +1535,8 @@ def inject_global_vars():
             'session': session,
             'request': request,
             'groq_client': bool(groq_client),
-            'category_labels': CATEGORY_LABELS}
+            'category_labels': CATEGORY_LABELS,
+            'google_client_id': GOOGLE_CLIENT_ID}
 
 MAX_PAGE = 10000  # guards against ?page=999999999 style requests
 
@@ -2226,6 +2231,125 @@ def login():
             flash('Invalid username or password.', 'danger')
     return render_template("LOGIN_HTML_TEMPLATE")
 
+# --- Sign in with Google ---------------------------------------------------------------------
+# Accounts made through Google get an unusable password (it can never match, because it is
+# not a password hash at all). The marker lets the profile page know there is no password.
+NO_PASSWORD_PREFIX = '!google-only:'
+RESERVED_USERNAMES = {ADMIN_USERNAME, 'admin', 'administrator', 'brieflyai', 'support', 'root', 'staff'}
+
+
+def has_usable_password(user):
+    return bool(user and user.password_hash and not user.password_hash.startswith(NO_PASSWORD_PREFIX))
+
+
+def _username_for_google(email, name):
+    local = (email or '').split('@')[0] or name or 'reader'
+    base = re.sub(r'[^a-z0-9_.]', '', local.lower()).strip('.')[:24]
+    if len(base) < 3:
+        base = (base + 'reader')[:24]
+    candidates = [base] + [f"{base}{secrets.randbelow(9000) + 1000}" for _ in range(8)]
+    for candidate in candidates:
+        if candidate in RESERVED_USERNAMES or not USERNAME_RE.match(candidate):
+            continue
+        if not User.query.filter_by(username=candidate).first():
+            return candidate
+    return f"reader{secrets.token_hex(4)}"
+
+
+def _verify_google_credential(credential):
+    """Returns Google's verified claims, or raises ValueError if the token is not genuine."""
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as google_requests
+    claims = id_token.verify_oauth2_token(credential, google_requests.Request(), GOOGLE_CLIENT_ID,
+                                          clock_skew_in_seconds=10)
+    if claims.get('iss') not in ('accounts.google.com', 'https://accounts.google.com'):
+        raise ValueError('Wrong issuer.')
+    return claims
+
+
+def _start_session(user):
+    session.clear()  # drop pre login state, including the old CSRF token
+    session.permanent = True
+    session['user_id'] = user.id
+    session['user_name'] = user.name
+    session['username'] = user.username
+    session['is_admin'] = (user.username == ADMIN_USERNAME)
+
+
+@app.route('/auth/google', methods=['POST'])
+@rate_limit(20, 300, scope='google_auth', message="Too many sign in attempts. Please wait a few minutes and try again.")
+def google_auth():
+    if not GOOGLE_CLIENT_ID:
+        return jsonify({"success": False, "error": "Google sign in is not available yet."}), 404
+    payload = request.get_json(silent=True) or {}
+    credential = payload.get('credential')
+    if not isinstance(credential, str) or not 20 < len(credential) < 4096:
+        return jsonify({"success": False, "error": "Google did not send a sign in token. Please try again."}), 400
+    try:
+        claims = _verify_google_credential(credential)
+    except ValueError as e:
+        app.logger.warning(f"Rejected Google sign in from {_client_identity()}: {e}")
+        return jsonify({"success": False, "error": "That Google sign in could not be verified. Please try again."}), 401
+    except Exception as e:
+        app.logger.error(f"Google sign in check failed: {e}", exc_info=True)
+        return jsonify({"success": False, "error": "Google sign in is not reachable right now. Please try again shortly."}), 503
+    if not claims.get('email_verified'):
+        return jsonify({"success": False, "error": "Please verify your Google email address first."}), 401
+
+    subject, email = str(claims['sub']), (claims.get('email') or '')[:255]
+    identity = UserIdentity.query.filter_by(provider='google', subject=subject).first()
+    current = db.session.get(User, session['user_id']) if session.get('user_id') else None
+    try:
+        if identity:
+            user = identity.user
+            if current and current.id != user.id:
+                return jsonify({"success": False, "error": "That Google account is already linked to another BrieflyAI account."}), 409
+            identity.email = email
+            db.session.commit()
+            message = None if current else f"Welcome back, {user.name}!"
+        elif current:
+            if current.identities.filter_by(provider='google').first():
+                return jsonify({"success": False, "error": "A different Google account is already linked. Disconnect it first."}), 409
+            db.session.add(UserIdentity(user_id=current.id, provider='google', subject=subject, email=email))
+            db.session.commit()
+            user, message = current, "Google sign in is connected. You can use it next time."
+        else:
+            name, _ = clean_text(claims.get('name') or email.split('@')[0] or 'Reader', LIMITS['name'])
+            user = User(name=name or 'Reader', username=_username_for_google(email, name),
+                        password_hash=NO_PASSWORD_PREFIX + secrets.token_hex(16))
+            db.session.add(user)
+            db.session.flush()
+            db.session.add(UserIdentity(user_id=user.id, provider='google', subject=subject, email=email))
+            db.session.commit()
+            app.logger.info(f"New account {user.username} created with Google sign in.")
+            message = f"Welcome to BrieflyAI, {user.name}! Your username is {user.username}."
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Google sign in could not save the account: {e}", exc_info=True)
+        return jsonify({"success": False, "error": "Your account could not be saved. Please try again."}), 500
+
+    if current:
+        flash(message, "success")
+        return jsonify({"success": True, "redirect_url": url_for('profile')})
+    _start_session(user)
+    flash(message, "success")
+    session.pop('previous_list_page', None)
+    return jsonify({"success": True, "redirect_url": safe_redirect_target(payload.get('next') or url_for('index'))})
+
+
+@app.route('/auth/google/disconnect', methods=['POST'])
+@login_required
+def google_disconnect():
+    user = db.session.get(User, session['user_id'])
+    if not has_usable_password(user):
+        flash("Your account has no password yet, so Google sign in is the only way in. It stays connected.", "warning")
+        return redirect(url_for('profile'))
+    removed = user.identities.filter_by(provider='google').delete(synchronize_session=False)
+    db.session.commit()
+    flash("Google sign in is disconnected." if removed else "Google sign in was not connected.", "info")
+    return redirect(url_for('profile'))
+
+
 @app.route('/logout')
 def logout(): session.clear(); flash("You have been successfully logged out.", "info"); return redirect(url_for('index'))
 @app.route('/about')
@@ -2654,7 +2778,8 @@ def profile():
             if api_art: article_detail_data = {'id': api_art['id'], 'title': api_art['title'], 'description': api_art['description'], 'urlToImage': api_art['urlToImage'], 'publishedAt': api_art['publishedAt'], 'source': {'name': api_art['source']['name']}, 'is_community_article': False, 'article_url': url_for('article_detail', article_hash_id=api_art['id'])}
             else: article_detail_data = {'id': bookmark.article_hash_id, 'title': bookmark.title_cache or "Bookmarked Article (Details N/A)", 'description': bookmark.description_cache or "Description not available.", 'urlToImage': bookmark.image_url_cache or None, 'publishedAt': bookmark.published_at_cache.isoformat() if bookmark.published_at_cache else None, 'source': {'name': bookmark.source_name_cache or "Unknown Source"}, 'is_community_article': False, 'article_url': url_for('article_detail', article_hash_id=bookmark.article_hash_id), 'is_stale_bookmark': True}
         if article_detail_data: user_bookmarked_articles_data.append(article_detail_data)
-    return render_template("PROFILE_HTML_TEMPLATE", user=user, posted_articles=user_posted_articles, bookmarked_articles=user_bookmarked_articles_data, bookmarks_pagination=user_bookmarks_paginated_query, current_page=page)
+    return render_template("PROFILE_HTML_TEMPLATE", user=user, posted_articles=user_posted_articles, bookmarked_articles=user_bookmarked_articles_data, bookmarks_pagination=user_bookmarks_paginated_query, current_page=page,
+                           has_password=has_usable_password(user), google_identity=user.identities.filter_by(provider='google').first())
 
 @app.errorhandler(404)
 def page_not_found(e): return render_template("404_TEMPLATE"), 404
@@ -3087,6 +3212,8 @@ def export_my_data():
                 "name": user.name,
                 "username": user.username,
                 "created_at": user.created_at.isoformat() if user.created_at else None,
+                "sign_in_methods": (["password"] if has_usable_password(user) else []) + [
+                    f"{i.provider} ({i.email})" if i.email else i.provider for i in user.identities],
             },
             "articles": [{
                 "title": a.title,
@@ -3137,9 +3264,14 @@ def delete_account():
         session.clear()
         return redirect(url_for('index'))
 
-    password = request.form.get('password', '')
-    if not password or not check_password_hash(user.password_hash, password):
-        flash("Password incorrect. Your account has not been deleted.", "danger")
+    if has_usable_password(user):
+        password = request.form.get('password', '')
+        if not password or not check_password_hash(user.password_hash, password):
+            flash("Password incorrect. Your account has not been deleted.", "danger")
+            return redirect(url_for('profile'))
+    elif request.form.get('confirm_username', '').strip().lower() != user.username:
+        # Google only accounts have no password; typing the username guards against slips.
+        flash("The username didn't match. Your account has not been deleted.", "danger")
         return redirect(url_for('profile'))
 
     username = user.username
@@ -5283,6 +5415,11 @@ BASE_HTML_TEMPLATE = """
         @keyframes aiPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
         @media (prefers-reduced-motion: reduce) { .ai-status i { animation: none !important; } }
 
+        .google-signin { display: flex; flex-direction: column; align-items: center; gap: 16px; margin-bottom: 24px; min-height: 44px; }
+        .contact-card .google-signin { align-items: flex-start; margin-bottom: 0; }
+        .auth-divider { display: flex; align-items: center; gap: 12px; width: 100%; color: var(--text-subtle-color); font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
+        .auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--card-border-color); }
+
         /* ==========================================================================
            PRINT
            ========================================================================== */
@@ -7364,6 +7501,32 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 {% endblock %}
 """
+_GOOGLE_SIGNIN_TEMPLATE = """
+{% if google_client_id %}
+<div class="google-signin">
+    <div id="g_id_onload" data-client_id="{{ google_client_id }}" data-callback="brieflyGoogleSignIn" data-auto_prompt="false" data-ux_mode="popup" data-context="{{ google_context or 'signin' }}"></div>
+    <div class="g_id_signin" data-type="standard" data-shape="pill" data-theme="{{ 'filled_black' if request.cookies.get('darkMode') == 'enabled' else 'outline' }}" data-text="{{ google_text or 'continue_with' }}" data-size="large" data-logo_alignment="left" data-width="{{ google_width or 320 }}"></div>
+    {% if not google_no_divider %}<div class="auth-divider" role="separator"><span>or use your username</span></div>{% endif %}
+</div>
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script>
+window.brieflyGoogleSignIn = function (response) {
+    fetch('{{ url_for("google_auth") }}', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
+        body: JSON.stringify({ credential: response.credential, next: {{ (request.args.get('next') or '')|tojson }} })
+    })
+    .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+    .then(function (res) {
+        if (res.ok && res.d.success) { window.location.href = res.d.redirect_url; return; }
+        BrieflyAI.showToast(res.d.error || 'Google sign in did not work. Please try again.', 'danger');
+    })
+    .catch(function () { BrieflyAI.showToast('Google sign in did not work. Please check your connection.', 'danger'); });
+};
+</script>
+{% endif %}
+"""
+
 LOGIN_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}Login - BrieflyAI{% endblock %}
@@ -7376,6 +7539,7 @@ LOGIN_HTML_TEMPLATE = """
         <h1>Welcome back</h1>
     </div>
     <div class="auth-body">
+        {% with google_context='signin', google_text='signin_with' %}{% include "_GOOGLE_SIGNIN_TEMPLATE" %}{% endwith %}
         <form method="POST" action="{{ url_for('login', next=request.args.get('next')) }}" id="loginForm">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="mb-3">
@@ -7430,6 +7594,7 @@ REGISTER_HTML_TEMPLATE = """
         <h1>Create your account</h1>
     </div>
     <div class="auth-body">
+        {% with google_context='signup', google_text='signup_with' %}{% include "_GOOGLE_SIGNIN_TEMPLATE" %}{% endwith %}
         <form method="POST" action="{{ url_for('register') }}" id="registerForm">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
              <div class="mb-3">
@@ -7594,21 +7759,40 @@ PROFILE_HTML_TEMPLATE = """
 <section class="mt-5 pt-4 border-top" aria-labelledby="accountHeading">
     <h2 class="section-heading h5 mb-3" id="accountHeading"><i class="ph ph-user-gear me-2" aria-hidden="true"></i>Your account &amp; data</h2>
     <div class="row g-3">
-        <div class="col-lg-4 col-md-6 d-flex">
+        {% if google_client_id or google_identity %}
+        <div class="col-xl-3 col-md-6 d-flex">
+            <div class="contact-card text-start w-100">
+                <h3 class="h6 mb-2"><i class="ph ph-google-logo me-2" aria-hidden="true"></i>Google sign in</h3>
+                {% if google_identity %}
+                    <p class="small text-muted mb-3">Connected{% if google_identity.email %} as {{ google_identity.email }}{% endif %}. You can sign in with Google.</p>
+                    {% if has_password %}
+                    <form method="POST" action="{{ url_for('google_disconnect') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-sm btn-outline-secondary">Disconnect</button>
+                    </form>
+                    {% endif %}
+                {% else %}
+                    <p class="small text-muted mb-3">Connect Google to sign in with one tap, without your password.</p>
+                    {% with google_context='use', google_text='continue_with', google_width=220, google_no_divider=True %}{% include "_GOOGLE_SIGNIN_TEMPLATE" %}{% endwith %}
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+        <div class="{{ 'col-xl-3' if (google_client_id or google_identity) else 'col-lg-4' }} col-md-6 d-flex">
             <div class="contact-card text-start w-100">
                 <h3 class="h6 mb-2"><i class="ph ph-chat-circle-text me-2" aria-hidden="true"></i>Share your experience</h3>
                 <p class="small text-muted mb-3">Tell other readers what BrieflyAI does for you. Approved notes appear on our welcome page.</p>
                 <a href="{{ url_for('share_testimonial') }}" class="btn btn-sm btn-outline-primary">Write a note</a>
             </div>
         </div>
-        <div class="col-lg-4 col-md-6 d-flex">
+        <div class="{{ 'col-xl-3' if (google_client_id or google_identity) else 'col-lg-4' }} col-md-6 d-flex">
             <div class="contact-card text-start w-100">
                 <h3 class="h6 mb-2"><i class="ph ph-download-simple me-2" aria-hidden="true"></i>Download your data</h3>
                 <p class="small text-muted mb-3">Get a JSON copy of your profile, articles, comments and bookmarks.</p>
                 <a href="{{ url_for('export_my_data') }}" class="btn btn-sm btn-outline-primary">Export my data</a>
             </div>
         </div>
-        <div class="col-lg-4 col-md-6 d-flex">
+        <div class="{{ 'col-xl-3' if (google_client_id or google_identity) else 'col-lg-4' }} col-md-6 d-flex">
             <div class="contact-card text-start w-100">
                 <h3 class="h6 mb-2"><i class="ph ph-warning me-2" aria-hidden="true"></i>Delete your account</h3>
                 <p class="small text-muted mb-3">Permanently removes your account, articles, comments and bookmarks. This cannot be undone.</p>
@@ -7630,11 +7814,19 @@ PROFILE_HTML_TEMPLATE = """
                 <div class="modal-body">
                     <p>This permanently deletes your account and everything attached to it &mdash; articles, comments and bookmarks. It cannot be undone.</p>
                     <p class="small text-muted">Consider <a href="{{ url_for('export_my_data') }}">exporting your data</a> first.</p>
+                    {% if has_password %}
                     <label for="deleteAccountPassword" class="form-label fw-medium">Confirm your password</label>
                     <div class="input-group-icon">
                         <i class="ph ph-lock input-icon" aria-hidden="true"></i>
                         <input type="password" class="form-control" id="deleteAccountPassword" name="password" required autocomplete="current-password">
                     </div>
+                    {% else %}
+                    <label for="deleteAccountConfirm" class="form-label fw-medium">Type your username, {{ user.username }}, to confirm</label>
+                    <div class="input-group-icon">
+                        <i class="ph ph-user input-icon" aria-hidden="true"></i>
+                        <input type="text" class="form-control" id="deleteAccountConfirm" name="confirm_username" required autocomplete="off" autocapitalize="none" spellcheck="false">
+                    </div>
+                    {% endif %}
                 </div>
                 <div class="modal-footer border-0 pt-0">
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -7797,11 +7989,12 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
         <h1>Privacy policy</h1>
     </div>
     <div class="static-content-container">
-        <p class="text-muted">Last updated: November 6, 2026</p>
+        <p class="text-muted">Last updated: November 7, 2026</p>
         <p>BrieflyAI ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you visit our website.</p>
 
         <h2><i class="icon ph ph-shield-check" aria-hidden="true"></i>1. Information we collect</h2>
         <p>We may collect personal information that you voluntarily provide to us when you register on the website, post articles or comments, bookmark articles, send a testimonial, or subscribe to our newsletter. This information may include your name, username, email address, and your activities on our platform such as articles posted and bookmarked.</p>
+        <p>If you choose Sign in with Google, Google tells us your name, your email address and a Google account number, and confirms that you own that email address. We use them only to create your account and sign you in. We never receive your Google password, and we do not see your Google contacts, files or other data. You can disconnect Google from your profile page if your account also has a password.</p>
 
         <h2><i class="icon ph ph-list-checks" aria-hidden="true"></i>2. How we use your information</h2>
         <p>We use the information we collect to:</p>
@@ -9346,6 +9539,7 @@ template_storage['ADMIN_TESTIMONIALS_HTML_TEMPLATE'] = ADMIN_TESTIMONIALS_HTML_T
 template_storage['ADMIN_STORAGE_HTML_TEMPLATE'] = ADMIN_STORAGE_HTML_TEMPLATE
 template_storage['_AD_SLOT_TEMPLATE'] = _AD_SLOT_TEMPLATE
 template_storage['_STORY_CARD_TEMPLATE'] = _STORY_CARD_TEMPLATE
+template_storage['_GOOGLE_SIGNIN_TEMPLATE'] = _GOOGLE_SIGNIN_TEMPLATE
 
 
 # ==============================================================================
