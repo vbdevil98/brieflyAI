@@ -2014,6 +2014,180 @@ def contact(): return render_template("CONTACT_HTML_TEMPLATE")
 @app.route('/privacy')
 def privacy(): return render_template("PRIVACY_POLICY_HTML_TEMPLATE")
 
+
+# ==============================================================================
+# --- Landing page (/welcome) ---
+# The news feed stays at '/'. This page explains the product to new visitors and
+# sends them to the feed. Everything it states is read from the app's own config and
+# data, so it cannot drift out of date or claim something the app does not do.
+# ==============================================================================
+_LANDING_SOURCE_LABELS = (
+    ('thehindu', 'The Hindu'),
+    ('ndtv', 'NDTV'),
+    ('indianexpress', 'The Indian Express'),
+    ('hindustantimes', 'Hindustan Times'),
+    ('timesofindia', 'The Times of India'),
+)
+_NUMBER_WORDS = ('', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten')
+LANDING_TAGLINE = ("You don't need every word of every story. "
+                   "You need what happened, in plain words, and a link to the rest.")
+# A small weekly count reads as a weakness rather than proof, so it stays hidden below this.
+LANDING_STAT_MIN = int(os.environ.get('LANDING_STAT_MIN', '20'))
+LANDING_OG_IMAGE = 'og-welcome.png'
+
+
+def _join_names(names):
+    if len(names) <= 1:
+        return ''.join(names)
+    return ', '.join(names[:-1]) + ' and ' + names[-1]
+
+
+def _landing_source_names():
+    """Publisher names behind the main feed, taken from the feeds actually configured."""
+    if os.environ.get('USE_RSS', 'true').lower() in ('1', 'true', 'yes'):
+        locations = _rss_feed_urls()
+    else:
+        locations = app.config['NEWS_API_DOMAINS'].split(',')
+    names = []
+    for loc in locations:
+        loc = loc.strip()
+        if not loc:
+            continue
+        lowered = loc.lower()
+        name = next((label for needle, label in _LANDING_SOURCE_LABELS if needle in lowered), None)
+        if not name:
+            host = urllib.parse.urlparse(loc if '://' in loc else f'https://{loc}').hostname or ''
+            name = host[4:] if host.startswith('www.') else host
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _landing_sample_story():
+    """
+    The most recent real story that already has a saved AI summary, for the hero card.
+    Reads only the database and the in-memory article store, so it never triggers a news
+    fetch or an AI call. Returns None when nothing suitable is cached (e.g. right after a
+    restart); the template then shows what every summary contains instead.
+    """
+    try:
+        rows = (ArticleAnalysis.query
+                .filter(ArticleAnalysis.groq_summary.isnot(None))
+                .order_by(ArticleAnalysis.created_at.desc())
+                .limit(60).all())
+    except Exception as e:
+        app.logger.warning(f"Landing page sample story lookup failed: {e}")
+        return None
+    for row in rows:
+        article = MASTER_ARTICLE_STORE.get(row.article_hash_id)
+        if not article or not article.get('title'):
+            continue
+        try:
+            takeaways = json.loads(row.groq_takeaways) if row.groq_takeaways else []
+        except (ValueError, TypeError):
+            takeaways = []
+        if not isinstance(takeaways, list):
+            continue
+        takeaways = [t.strip() for t in takeaways if isinstance(t, str) and t.strip()][:4]
+        summary = (row.groq_summary or '').strip()
+        if not summary or len(takeaways) < 2:
+            continue
+        published = to_ist_filter(article.get('publishedAt')) if article.get('publishedAt') else None
+        if published and (published.startswith('Invalid') or published == 'N/A'):
+            published = None
+        return {
+            'title': article['title'],
+            'source': (article.get('source') or {}).get('name') or 'Publisher',
+            'published': published,
+            'summary': summary,
+            'takeaways': takeaways,
+            'url': url_for('article_detail', article_hash_id=row.article_hash_id),
+        }
+    return None
+
+
+def _landing_weekly_summary_count():
+    try:
+        since = datetime.now(timezone.utc) - timedelta(days=7)
+        return ArticleAnalysis.query.filter(ArticleAnalysis.created_at >= since).count()
+    except Exception as e:
+        app.logger.warning(f"Landing page weekly count failed: {e}")
+        return 0
+
+
+def _landing_faqs(sources_sentence):
+    feed_line = (f"The main feed comes from the public news feeds of {sources_sentence}. "
+                 if sources_sentence else "The main feed comes from the public news feeds of major Indian newsrooms. ")
+    return [
+        {"q": "Is BrieflyAI free?",
+         "a": "Yes. Every story, summary and takeaway on BrieflyAI is free to read, and you don't need an account or a card."},
+        {"q": "Do I need an account?",
+         "a": "Not to read. A free account needs only a name, a username and a password, with no email address. "
+              "It lets you bookmark stories, react and reply in the comments, and post articles to the Community Hub."},
+        {"q": "Where does the news come from?",
+         "a": feed_line + "The popular stories and yesterday's headlines sections can include other outlets too. "
+              "Community Hub posts are written by registered readers and are marked as community posts."},
+        {"q": "Who writes the summaries?",
+         "a": "A large language model writes them from the text of each article. It is told to stay neutral, "
+              "lead with the most important fact, keep the summary under 60 words and list three or four takeaways."},
+        {"q": "Can a summary get something wrong?",
+         "a": "It can. AI can miss context or nuance, which is why every summary links to the original article. "
+              "When a story matters to you, read the full report at the source."},
+        {"q": "How fresh is the news?",
+         "a": "New stories are pulled in through the day, and the big picture briefing at the top of the feed "
+              "is rewritten every few hours."},
+        {"q": "Does it work on my phone?",
+         "a": "Yes. It works in any mobile browser, you can add it to your home screen like an app, "
+              "and pages you have already opened stay readable when you lose signal."},
+        {"q": "Can I download or delete my data?",
+         "a": "Yes. From your profile you can export everything tied to your account, "
+              "or delete the account permanently."},
+    ]
+
+
+@app.route('/welcome')
+def landing():
+    """Landing page for new visitors. The news feed itself stays at '/'."""
+    sources = _landing_source_names()
+    sources_sentence = _join_names(sources)
+    faqs = _landing_faqs(sources_sentence)
+
+    weekly = _landing_weekly_summary_count()
+
+    # Render terminates TLS in front of the app, so trust its forwarded scheme for absolute URLs.
+    scheme = request.headers.get('X-Forwarded-Proto', request.scheme).split(',')[0].strip() or 'https'
+    origin = f"{scheme}://{request.host}"
+    og_image_url = None
+    if app.static_folder and os.path.exists(os.path.join(app.static_folder, LANDING_OG_IMAGE)):
+        og_image_url = origin + url_for('static', filename=LANDING_OG_IMAGE)
+
+    pref = request.cookies.get('darkMode')
+    theme = 'dark' if pref == 'enabled' else ('light' if pref == 'disabled' else 'auto')
+
+    return render_template(
+        "LANDING_HTML_TEMPLATE",
+        theme=theme,
+        canonical_url=origin + url_for('landing'),
+        og_image_url=og_image_url,
+        sources=sources,
+        sources_sentence=sources_sentence,
+        sources_short=', '.join(sources[:3]) if sources else 'major Indian newsrooms',
+        source_count_word=_NUMBER_WORDS[len(sources)] if len(sources) < len(_NUMBER_WORDS) else str(len(sources)),
+        sample_story=_landing_sample_story(),
+        weekly_summaries=weekly if weekly >= LANDING_STAT_MIN else None,
+        tagline=LANDING_TAGLINE,
+        faqs=faqs,
+        faq_schema={
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            "mainEntity": [{
+                "@type": "Question",
+                "name": item["q"],
+                "acceptedAnswer": {"@type": "Answer", "text": item["a"]},
+            } for item in faqs],
+        },
+    )
+
 @app.route('/subscribe', methods=['POST'])
 @rate_limit(5, 3600, scope='subscribe', message="Too many subscription attempts. Please try again later.")
 def subscribe():
@@ -2170,6 +2344,7 @@ def sitemap():
         urls.append(entry)
 
     add(url_for('index', _external=True), 'hourly', '1.0')
+    add(url_for('landing', _external=True), 'weekly', '0.6')
     for endpoint in ('about', 'contact', 'privacy'):
         add(url_for(endpoint, _external=True), 'monthly', '0.4')
     for category in app.config['CATEGORIES']:
@@ -3668,6 +3843,7 @@ BASE_HTML_TEMPLATE = """
                     <h5>Quick Links</h5>
                     <div class="footer-links">
                         <a href="{{ url_for('index') }}">Home</a>
+                        <a href="{{ url_for('landing') }}">How BrieflyAI works</a>
                         <a href="{{ url_for('about') }}">About Us</a>
                         <a href="{{ url_for('contact') }}">Contact</a>
                         <a href="{{ url_for('privacy') }}">Privacy Policy</a>
@@ -5913,6 +6089,1043 @@ OFFLINE_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}Offline
 </div>
 {% endblock %}"""
 
+# Landing page (/welcome). A raw string, so the CSS escapes in class names like
+# .md\:heading-2 reach the browser untouched.
+LANDING_HTML_TEMPLATE = r"""<!doctype html>
+{#
+  BrieflyAI landing page (/welcome).
+
+  Standalone on purpose: it follows the landing page design system (one typeface: Geist,
+  Phosphor icons, fixed spacing and type scales) instead of the Bootstrap based site shell.
+  Text styles are defined once below as heading-*, title-*, body-*, button-*, caption-*
+  and applied by name. Responsive variants use the md: (768px) and lg: (1024px) prefixes.
+#}
+<html lang="en" data-theme="{{ theme }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BrieflyAI: India's news, one minute per story</title>
+    <meta name="description" content="Short AI summaries and key takeaways for India's top stories from {{ sources_short }} and more. Free to read, no account needed.">
+    <link rel="canonical" href="{{ canonical_url }}">
+    <meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+    <link rel="manifest" href="{{ url_for('web_manifest') }}">
+    <link rel="icon" href="{{ url_for('app_icon', size=192) }}" type="image/svg+xml">
+
+    <meta property="og:site_name" content="BrieflyAI">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="BrieflyAI: India's news, one minute per story">
+    <meta property="og:description" content="Every story gets a neutral summary of under 60 words and three or four key takeaways, with the original article one tap away. Free to read.">
+    <meta property="og:url" content="{{ canonical_url }}">
+    {% if og_image_url %}
+    <meta property="og:image" content="{{ og_image_url }}">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="BrieflyAI: India's news, one minute per story">
+    <meta name="twitter:image" content="{{ og_image_url }}">
+    {% endif %}
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="BrieflyAI: India's news, one minute per story">
+    <meta name="twitter:description" content="Short AI summaries and key takeaways for India's top stories. Free to read, no account needed.">
+
+    <script type="application/ld+json">{{ faq_schema|tojson }}</script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap">
+
+    <style>
+        /* ==========================================================================
+           TOKENS
+           ========================================================================== */
+        :root {
+            /* Spacing: the only values allowed for padding, margin and gap. */
+            --spacing-0: 0; --spacing-25: 2px; --spacing-50: 4px; --spacing-75: 8px;
+            --spacing-100: 12px; --spacing-200: 16px; --spacing-300: 24px; --spacing-400: 32px;
+            --spacing-500: 40px; --spacing-600: 48px; --spacing-700: 64px; --spacing-800: 80px;
+            --spacing-900: 96px;
+
+            /* Radius: Tailwind steps. Nested shapes use outer minus gap when the gap is under 32px. */
+            --rounded-md: 6px; --rounded-lg: 8px; --rounded-xl: 12px; --rounded-2xl: 16px;
+            --rounded-3xl: 24px; --rounded-full: 9999px;
+
+            /* Motion */
+            --ease: cubic-bezier(0.22, 1, 0.36, 1);
+            --duration-layout: 500ms;
+            --duration-color: 300ms;
+
+            --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+            /* Light theme */
+            color-scheme: light;
+            --bg: #FFFFFF;
+            --surface: #F6F6F4;
+            --surface-raised: #FFFFFF;
+            --surface-muted: #EDEDEA;
+            --tile-bg: #FFFFFF;
+            --border: #E4E4E0;
+            --border-strong: #0A0A0A;
+            --text: #0A0A0A;
+            --text-muted: #55555A;
+            --text-subtle: #76767C;
+            --accent: #0F766E;
+            --btn-bg: #0A0A0A;
+            --btn-text: #FFFFFF;
+            --btn-hover: #2C2C2E;
+            --btn-ghost-hover: #EDEDEA;
+            --nav-bg: rgba(255, 255, 255, 0.72);
+            --panel-bg: rgba(255, 255, 255, 0.94);
+            --hero-from: #000000;
+            --hero-to: #666666;
+            --card-shadow: 0 24px 48px -24px rgba(10, 10, 10, 0.18);
+        }
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --bg: #000000;
+            --surface: #181818;
+            --surface-raised: #181818;
+            --surface-muted: #1F1F1F;
+            --tile-bg: #272727;
+            --border: #272727;
+            --border-strong: #F5F5F5;
+            --text: #F5F5F5;
+            --text-muted: #A3A3A8;
+            --text-subtle: #8A8A90;
+            --accent: #2DD4BF;
+            --btn-bg: #F5F5F5;
+            --btn-text: #000000;
+            --btn-hover: #D9D9D9;
+            --btn-ghost-hover: #1F1F1F;
+            --nav-bg: rgba(24, 24, 24, 0.72);
+            --panel-bg: rgba(0, 0, 0, 0.92);
+            --hero-from: #FFFFFF;
+            --hero-to: #9B9B9B;
+            --card-shadow: none;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root[data-theme="auto"] {
+                color-scheme: dark;
+                --bg: #000000;
+                --surface: #181818;
+                --surface-raised: #181818;
+                --surface-muted: #1F1F1F;
+                --tile-bg: #272727;
+                --border: #272727;
+                --border-strong: #F5F5F5;
+                --text: #F5F5F5;
+                --text-muted: #A3A3A8;
+                --text-subtle: #8A8A90;
+                --accent: #2DD4BF;
+                --btn-bg: #F5F5F5;
+                --btn-text: #000000;
+                --btn-hover: #D9D9D9;
+                --btn-ghost-hover: #1F1F1F;
+                --nav-bg: rgba(24, 24, 24, 0.72);
+                --panel-bg: rgba(0, 0, 0, 0.92);
+                --hero-from: #FFFFFF;
+                --hero-to: #9B9B9B;
+                --card-shadow: none;
+            }
+        }
+
+        /* ==========================================================================
+           TEXT STYLES (Tailwind type scale only)
+           ========================================================================== */
+        .heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
+        .heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
+        .heading-3 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.02em; }
+        .heading-4 { font-size: 1.875rem; line-height: 2.25rem; font-weight: 600; letter-spacing: -0.02em; }
+        .heading-5 { font-size: 1.5rem; line-height: 2rem; font-weight: 600; letter-spacing: -0.015em; }
+        .heading-6 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 600; }
+        .title-1 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 500; letter-spacing: -0.01em; }
+        .title-2 { font-size: 1.125rem; line-height: 1.75rem; font-weight: 500; }
+        .title-3 { font-size: 1rem; line-height: 1.5rem; font-weight: 500; }
+        .title-4 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; }
+        .title-5 { font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
+        .body-1 { font-size: 1rem; line-height: 1.5rem; font-weight: 600; }
+        .body-2 { font-size: 1rem; line-height: 1.5rem; font-weight: 500; }
+        .body-3 { font-size: 1rem; line-height: 1.5rem; font-weight: 400; }
+        .body-4 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; }
+        .body-5 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; }
+        .body-6 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 400; }
+        .body-7 { font-size: 1.125rem; line-height: 1.75rem; font-weight: 400; }
+        .button-lg { font-size: 1.125rem; line-height: 1.75rem; font-weight: 600; }
+        .button-md { font-size: 1rem; line-height: 1.5rem; font-weight: 600; }
+        .button-sm { font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; }
+        .button-xsm { font-size: 0.75rem; line-height: 1rem; font-weight: 600; }
+        .caption-1 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; }
+        .caption-2 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 400; }
+        .caption-3 { font-size: 0.75rem; line-height: 1rem; font-weight: 600; }
+        .caption-4 { font-size: 0.75rem; line-height: 1rem; font-weight: 500; }
+        .caption-5 { font-size: 0.75rem; line-height: 1rem; font-weight: 400; }
+        @media (min-width: 768px) {
+            .md\:heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
+            .md\:heading-3 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.02em; }
+            .md\:body-7 { font-size: 1.125rem; line-height: 1.75rem; font-weight: 400; }
+        }
+        @media (min-width: 1024px) {
+            .lg\:heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
+            .lg\:heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.025em; }
+        }
+
+        /* ==========================================================================
+           BASE
+           ========================================================================== */
+        *, *::before, *::after { box-sizing: border-box; }
+        html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: var(--spacing-900); }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-sans);
+            font-size: 1rem;
+            line-height: 1.5rem;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            overflow-x: clip;
+        }
+        h1, h2, h3, h4, h5, h6, p, ul, ol, figure, dl, dd { margin: 0; }
+        ul, ol { padding: 0; list-style: none; }
+        a { color: inherit; text-decoration: none; }
+        button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+        h1, h2, h3, h4, h5, h6, [class*="heading-"], [class*="title-"] { text-wrap: balance; }
+        p, li, dd, summary { text-wrap: pretty; }
+        em, i { font-style: normal; }
+        ::selection { background: var(--text); color: var(--bg); }
+
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--rounded-md); }
+
+        .icon { width: 20px; height: 20px; flex: none; fill: currentColor; }
+        .icon-sm { width: 16px; height: 16px; }
+        .icon-lg { width: 24px; height: 24px; }
+
+        .container { width: 100%; max-width: 1152px; margin-inline: auto; padding-inline: var(--spacing-300); }
+        @media (min-width: 768px) { .container { padding-inline: var(--spacing-400); } }
+
+        .skip-link {
+            position: absolute; left: var(--spacing-200); top: var(--spacing-200); z-index: 100;
+            padding: var(--spacing-75) var(--spacing-100); border-radius: var(--rounded-lg);
+            background: var(--btn-bg); color: var(--btn-text);
+            transform: translateY(-200%);
+        }
+        .skip-link:focus { transform: none; }
+
+        .muted { color: var(--text-muted); }
+        .subtle { color: var(--text-subtle); }
+        .accent { color: var(--accent); }
+
+        /* ==========================================================================
+           BUTTONS
+           ========================================================================== */
+        .btn {
+            display: inline-flex; align-items: center; justify-content: center; gap: var(--spacing-75);
+            padding: var(--spacing-75) var(--spacing-100);
+            border-radius: var(--rounded-lg);
+            border: 1px solid transparent;
+            white-space: nowrap;
+            transition: background-color var(--duration-color) var(--ease),
+                        color var(--duration-color) var(--ease),
+                        border-color var(--duration-color) var(--ease),
+                        transform var(--duration-layout) var(--ease);
+        }
+        .btn .icon { transition: transform var(--duration-layout) var(--ease); }
+        .btn:active { transform: scale(0.98); }
+        .btn-primary { background: var(--btn-bg); color: var(--btn-text); }
+        .btn-primary:hover { background: var(--btn-hover); }
+        .btn-primary:hover .icon-arrow { transform: translateX(var(--spacing-25)); }
+        .btn-ghost { color: var(--text); border-color: var(--border); background: var(--bg); }
+        .btn-ghost:hover { background: var(--btn-ghost-hover); }
+
+        .text-link {
+            display: inline-flex; align-items: center; gap: var(--spacing-50);
+            color: var(--text); text-decoration: underline; text-decoration-color: var(--border);
+            text-underline-offset: 4px;
+            transition: text-decoration-color var(--duration-color) var(--ease), color var(--duration-color) var(--ease);
+        }
+        .text-link:hover { text-decoration-color: currentColor; }
+        .text-link .icon { transition: transform var(--duration-layout) var(--ease); }
+        .text-link:hover .icon { transform: translate(var(--spacing-25), calc(var(--spacing-25) * -1)); }
+
+        /* ==========================================================================
+           NAVIGATION
+           ========================================================================== */
+        .site-nav {
+            position: fixed; top: var(--spacing-200); left: 50%; z-index: 50;
+            transform: translateX(-50%);
+            display: flex; align-items: center; gap: var(--spacing-75);
+            width: max-content; max-width: calc(100% - var(--spacing-400));
+            padding: var(--spacing-75);
+            border-radius: var(--rounded-2xl);
+            border: 1px solid var(--border);
+            background: var(--nav-bg);
+            -webkit-backdrop-filter: blur(16px) saturate(140%);
+            backdrop-filter: blur(16px) saturate(140%);
+        }
+        .nav-brand {
+            display: inline-flex; align-items: center; gap: var(--spacing-75);
+            padding: var(--spacing-75) var(--spacing-100);
+            border-radius: var(--rounded-lg); /* nav radius 16 minus 8 gap */
+            transition: background-color var(--duration-color) var(--ease);
+        }
+        .nav-brand:hover { background: var(--btn-ghost-hover); }
+        .nav-brand .icon { color: var(--accent); }
+        .nav-links { display: none; align-items: center; gap: var(--spacing-25); }
+        .nav-links a {
+            display: block; padding: var(--spacing-75) var(--spacing-100);
+            border-radius: var(--rounded-lg);
+            color: var(--text-muted);
+            transition: background-color var(--duration-color) var(--ease), color var(--duration-color) var(--ease);
+        }
+        .nav-links a:hover { color: var(--text); background: var(--btn-ghost-hover); }
+        .nav-links a.is-current { color: var(--text); background: var(--surface-muted); }
+        .nav-cta { display: none; }
+        .nav-toggle {
+            position: relative; display: inline-flex; align-items: center; justify-content: center;
+            width: 40px; height: 40px; border-radius: var(--rounded-lg);
+            transition: background-color var(--duration-color) var(--ease);
+        }
+        .nav-toggle:hover { background: var(--btn-ghost-hover); }
+        .nav-toggle-line {
+            position: absolute; left: 12px; right: 12px; height: 1.5px; border-radius: var(--rounded-full);
+            background: currentColor;
+            transition: transform var(--duration-layout) var(--ease);
+        }
+        .nav-toggle-line:first-child { transform: translateY(-4px); }
+        .nav-toggle-line:last-child { transform: translateY(4px); }
+        .nav-toggle[aria-expanded="true"] .nav-toggle-line:first-child { transform: rotate(45deg); }
+        .nav-toggle[aria-expanded="true"] .nav-toggle-line:last-child { transform: rotate(-45deg); }
+        @media (min-width: 768px) {
+            .nav-links { display: flex; }
+            .nav-cta { display: inline-flex; }
+            .nav-toggle { display: none; }
+        }
+
+        .mobile-menu {
+            position: fixed; inset: 0; z-index: 40;
+            display: flex; flex-direction: column; justify-content: space-between; gap: var(--spacing-400);
+            padding: var(--spacing-900) var(--spacing-300) var(--spacing-400);
+            background: var(--panel-bg);
+            -webkit-backdrop-filter: blur(24px);
+            backdrop-filter: blur(24px);
+            opacity: 0;
+            transition: opacity var(--duration-color) var(--ease);
+            overflow-y: auto;
+        }
+        .mobile-menu[hidden] { display: none; }
+        .mobile-menu.is-open { opacity: 1; }
+        .mobile-menu-list { display: flex; flex-direction: column; gap: var(--spacing-75); }
+        .mobile-menu-list a { display: block; padding: var(--spacing-75) 0; }
+        .menu-item {
+            opacity: 0; transform: translateY(var(--spacing-300));
+            transition: opacity var(--duration-layout) var(--ease), transform var(--duration-layout) var(--ease);
+        }
+        .mobile-menu.is-open .menu-item { opacity: 1; transform: none; }
+        .mobile-menu .btn { width: 100%; }
+        html.menu-open { overflow: hidden; }
+
+        /* ==========================================================================
+           SECTIONS
+           ========================================================================== */
+        .section { padding-block: var(--spacing-700); }
+        @media (min-width: 768px) { .section { padding-block: var(--spacing-900); } }
+        .section-head { max-width: 680px; margin-bottom: var(--spacing-600); }
+        .section-head.is-centered { margin-inline: auto; text-align: center; }
+        .section-head > * + * { margin-top: var(--spacing-200); }
+        .eyebrow { color: var(--accent); }
+
+        /* --- Hero --- */
+        .hero { padding-top: var(--spacing-900); padding-bottom: var(--spacing-700); text-align: center; }
+        @media (min-width: 768px) {
+            .hero { padding-bottom: var(--spacing-900); }
+            .hero-inner { padding-top: var(--spacing-700); }
+        }
+        .hero-badge {
+            display: inline-flex; align-items: center; gap: var(--spacing-75);
+            padding: var(--spacing-50) var(--spacing-100);
+            border-radius: var(--rounded-full);
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-muted);
+        }
+        .live-dot { width: 8px; height: 8px; border-radius: var(--rounded-full); background: var(--accent); animation: pulse 2400ms var(--ease) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+        .hero-title { max-width: 680px; width: fit-content; margin: var(--spacing-300) auto 0; color: var(--text); }
+        /* Inline + cloned decoration so every line gets the full left to right gradient. */
+        .hero-title-text {
+            background: linear-gradient(90deg, var(--hero-from), var(--hero-to));
+            -webkit-box-decoration-break: clone; box-decoration-break: clone;
+            -webkit-background-clip: text; background-clip: text;
+            -webkit-text-fill-color: transparent; color: transparent;
+        }
+        .hero-sub { max-width: 680px; margin: var(--spacing-300) auto 0; color: var(--text-muted); }
+        .hero-actions { margin-top: var(--spacing-400); display: flex; flex-direction: column; align-items: center; gap: var(--spacing-100); }
+        .hero-proof { margin-top: var(--spacing-600); display: flex; flex-direction: column; align-items: center; gap: var(--spacing-100); }
+        .source-row { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--spacing-75) var(--spacing-300); color: var(--text-muted); }
+
+        /* --- Story card (hero visual) --- */
+        .story-stack { position: relative; max-width: 560px; margin: var(--spacing-600) auto 0; padding-top: var(--spacing-300); }
+        @media (min-width: 768px) { .story-stack { margin-top: var(--spacing-700); } }
+        .story-ghost {
+            position: absolute; left: 0; right: 0; height: 96px;
+            border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface);
+            transform-origin: top center;
+        }
+        .story-ghost-back { top: 0; transform: scale(0.9); }
+        .story-ghost-mid { top: var(--spacing-100); transform: scale(0.95); }
+        .story-card {
+            position: relative; text-align: left;
+            padding: var(--spacing-300);
+            border-radius: var(--rounded-2xl);
+            border: 1px solid var(--border);
+            background: var(--surface-raised);
+            box-shadow: var(--card-shadow);
+        }
+        .story-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--spacing-75); }
+        .chip {
+            display: inline-flex; align-items: center; gap: var(--spacing-50);
+            padding: var(--spacing-50) var(--spacing-75);
+            border-radius: var(--rounded-full);
+            background: var(--surface-muted); color: var(--accent);
+        }
+        .story-title { margin-top: var(--spacing-200); }
+        .story-block { margin-top: var(--spacing-300); }
+        .story-block-label { color: var(--text-subtle); margin-bottom: var(--spacing-75); }
+        .takeaways { display: flex; flex-direction: column; gap: var(--spacing-100); }
+        .takeaways li { display: flex; gap: var(--spacing-75); align-items: flex-start; }
+        .takeaways .icon { color: var(--accent); margin-top: 0; }
+        .story-foot { margin-top: var(--spacing-300); }
+
+        /* --- Problem to solution --- */
+        .compare { display: grid; gap: var(--spacing-300); }
+        @media (min-width: 768px) { .compare { grid-template-columns: 1fr 1fr; } }
+        .compare-card { padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface); }
+        @media (min-width: 768px) { .compare-card { padding: var(--spacing-400); } }
+        .compare-card.is-strong { background: var(--surface-raised); border-color: var(--border-strong); }
+        .compare-list { margin-top: var(--spacing-300); display: flex; flex-direction: column; gap: var(--spacing-200); }
+        .compare-list li { display: flex; gap: var(--spacing-100); align-items: flex-start; }
+        .compare-card:not(.is-strong) .compare-list .icon { color: var(--text-subtle); }
+        .compare-card.is-strong .compare-list .icon { color: var(--accent); }
+        .compare-icon-gap { margin-top: var(--spacing-25); }
+
+        /* --- Benefits --- */
+        .benefits { display: grid; gap: var(--spacing-300); }
+        @media (min-width: 768px) { .benefits { grid-template-columns: repeat(2, 1fr); } }
+        @media (min-width: 1024px) {
+            .benefits { grid-template-columns: repeat(3, 1fr); }
+            .benefit-wide { grid-column: span 2; }
+        }
+        .benefit {
+            display: flex; flex-direction: column;
+            padding: var(--spacing-300);
+            border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface);
+        }
+        @media (min-width: 768px) { .benefit { padding: var(--spacing-400); } }
+        .icon-tile {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 40px; height: 40px; border-radius: var(--rounded-lg);
+            background: var(--tile-bg); border: 1px solid var(--border); color: var(--text);
+        }
+        .benefit-title { margin-top: var(--spacing-300); }
+        .benefit-text { margin-top: var(--spacing-75); color: var(--text-muted); }
+        .spec-row { margin-top: auto; padding-top: var(--spacing-400); display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--spacing-200); }
+        .spec-value { display: block; }
+        .spec-label { display: block; margin-top: var(--spacing-50); color: var(--text-muted); }
+
+        /* --- Tagline reveal --- */
+        .tagline-section { padding-block: var(--spacing-800); }
+        @media (min-width: 768px) { .tagline-section { padding-block: var(--spacing-900); } }
+        .tagline { max-width: 680px; margin-inline: auto; text-align: center; }
+        .tagline .word { transition: opacity var(--duration-layout) var(--ease); }
+        .js .tagline .word { opacity: 0.3; }
+        .js .tagline .word.is-on { opacity: 1; }
+
+        /* --- How it works --- */
+        .steps { display: grid; gap: var(--spacing-300); counter-reset: step; }
+        @media (min-width: 768px) { .steps { grid-template-columns: repeat(3, 1fr); } }
+        .step { padding: var(--spacing-300); border-radius: var(--rounded-2xl); border: 1px solid var(--border); background: var(--surface); }
+        @media (min-width: 768px) { .step { padding: var(--spacing-400); } }
+        .step-top { display: flex; align-items: center; justify-content: space-between; }
+        .step-title { margin-top: var(--spacing-300); }
+        .step-text { margin-top: var(--spacing-75); color: var(--text-muted); }
+
+        /* --- Proof / sources --- */
+        .proof { display: grid; gap: var(--spacing-600); align-items: start; }
+        @media (min-width: 1024px) { .proof { grid-template-columns: 5fr 7fr; gap: var(--spacing-700); } }
+        .proof .section-head { margin-bottom: 0; }
+        .proof-note { display: flex; gap: var(--spacing-100); align-items: flex-start; margin-top: var(--spacing-300); color: var(--text-muted); }
+        .proof-note .icon { color: var(--accent); }
+        .source-grid { display: grid; gap: var(--spacing-200); }
+        @media (min-width: 640px) { .source-grid { grid-template-columns: repeat(2, 1fr); } }
+        .source-tile { padding: var(--spacing-200) var(--spacing-300); border-radius: var(--rounded-xl); border: 1px solid var(--border); background: var(--surface); }
+        .source-tile .caption-5 { display: block; margin-top: var(--spacing-50); color: var(--text-subtle); }
+        .stat-tile { padding: var(--spacing-300); border-radius: var(--rounded-xl); border: 1px solid var(--border-strong); background: var(--surface-raised); }
+        @media (min-width: 640px) { .stat-tile { grid-column: 1 / -1; } }
+        .stat-tile .caption-2 { display: block; margin-top: var(--spacing-75); color: var(--text-muted); }
+
+        /* --- FAQ --- */
+        .faq { display: grid; gap: var(--spacing-600); }
+        @media (min-width: 1024px) { .faq { grid-template-columns: 4fr 8fr; gap: var(--spacing-700); } }
+        .faq .section-head { margin-bottom: 0; }
+        .faq-list { display: flex; flex-direction: column; gap: var(--spacing-100); }
+        .faq-item { border-radius: var(--rounded-xl); border: 1px solid var(--border); background: var(--surface); }
+        .faq-item summary {
+            display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-200);
+            padding: var(--spacing-200) var(--spacing-300);
+            border-radius: var(--rounded-xl);
+            cursor: pointer; list-style: none;
+            transition: background-color var(--duration-color) var(--ease);
+        }
+        .faq-item summary::-webkit-details-marker { display: none; }
+        .faq-item summary:hover { background: var(--surface-muted); }
+        .faq-item[open] summary:hover { background: transparent; }
+        .faq-item summary .icon { color: var(--text-muted); transition: transform var(--duration-layout) var(--ease); }
+        .faq-item[open] summary .icon { transform: rotate(45deg); }
+        .faq-answer { padding: 0 var(--spacing-300) var(--spacing-300); color: var(--text-muted); }
+        .faq-item[open] .faq-answer { animation: faq-in var(--duration-layout) var(--ease); }
+        @keyframes faq-in { from { opacity: 0; transform: translateY(calc(var(--spacing-75) * -1)); } to { opacity: 1; transform: none; } }
+
+        /* --- Final CTA --- */
+        .cta-panel {
+            padding: var(--spacing-600) var(--spacing-300);
+            border-radius: var(--rounded-3xl); border: 1px solid var(--border); background: var(--surface);
+            text-align: center;
+        }
+        @media (min-width: 768px) { .cta-panel { padding: var(--spacing-800) var(--spacing-600); } }
+        .cta-panel .cta-text { max-width: 560px; margin: var(--spacing-200) auto 0; color: var(--text-muted); }
+        .cta-panel .hero-actions { margin-top: var(--spacing-400); }
+
+        /* --- Footer --- */
+        .site-footer { padding-block: var(--spacing-600) var(--spacing-400); border-top: 1px solid var(--border); }
+        .footer-top { display: grid; gap: var(--spacing-400); }
+        @media (min-width: 768px) { .footer-top { grid-template-columns: 2fr 1fr 1fr; } }
+        .footer-brand { display: inline-flex; align-items: center; gap: var(--spacing-75); }
+        .footer-brand .icon { color: var(--accent); }
+        .footer-col h2 { color: var(--text); margin-bottom: var(--spacing-100); }
+        .footer-col ul { display: flex; flex-direction: column; gap: var(--spacing-75); }
+        .footer-col a { color: var(--text-muted); transition: color var(--duration-color) var(--ease); }
+        .footer-col a:hover { color: var(--text); }
+        .footer-bottom { margin-top: var(--spacing-600); display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--spacing-100); color: var(--text-subtle); }
+
+        /* ==========================================================================
+           SCROLL REVEAL (only when JS runs, so content never hides without it)
+           ========================================================================== */
+        .js [data-reveal] {
+            opacity: 0; transform: translateY(var(--spacing-400));
+            transition: opacity 700ms var(--ease), transform 700ms var(--ease);
+        }
+        .js [data-reveal].is-visible { opacity: 1; transform: none; }
+
+        @media (prefers-reduced-motion: reduce) {
+            html { scroll-behavior: auto; }
+            .js [data-reveal] { transform: none; }
+            .menu-item, .mobile-menu.is-open .menu-item { transform: none; }
+            .nav-toggle-line, .btn, .btn .icon, .text-link .icon, .faq-item summary .icon { transition-property: opacity, background-color, color, border-color; }
+            .btn:active { transform: none; }
+            .faq-item[open] .faq-answer { animation: none; }
+            .live-dot { animation: none; }
+            .js .tagline .word { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    {# Phosphor icons (regular weight, MIT), inlined as a sprite so the page needs no icon font. #}
+    <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="ph-lightning-fill" viewBox="0 0 256 256"><path d="M213.85,125.46l-112,120a8,8,0,0,1-13.69-7l14.66-73.33L45.19,143.49a8,8,0,0,1-3-13l112-120a8,8,0,0,1,13.69,7L153.18,90.9l57.63,21.61a8,8,0,0,1,3,12.95Z"/></symbol>
+    <symbol id="ph-arrow-right" viewBox="0 0 256 256"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z"/></symbol>
+    <symbol id="ph-arrow-up-right" viewBox="0 0 256 256"><path d="M200,64V168a8,8,0,0,1-16,0V83.31L69.66,197.66a8,8,0,0,1-11.32-11.32L172.69,72H88a8,8,0,0,1,0-16H192A8,8,0,0,1,200,64Z"/></symbol>
+    <symbol id="ph-check-circle" viewBox="0 0 256 256"><path d="M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"/></symbol>
+    <symbol id="ph-x-circle" viewBox="0 0 256 256"><path d="M165.66,101.66,139.31,128l26.35,26.34a8,8,0,0,1-11.32,11.32L128,139.31l-26.34,26.35a8,8,0,0,1-11.32-11.32L116.69,128,90.34,101.66a8,8,0,0,1,11.32-11.32L128,116.69l26.34-26.35a8,8,0,0,1,11.32,11.32ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"/></symbol>
+    <symbol id="ph-timer" viewBox="0 0 256 256"><path d="M128,40a96,96,0,1,0,96,96A96.11,96.11,0,0,0,128,40Zm0,176a80,80,0,1,1,80-80A80.09,80.09,0,0,1,128,216ZM173.66,90.34a8,8,0,0,1,0,11.32l-40,40a8,8,0,0,1-11.32-11.32l40-40A8,8,0,0,1,173.66,90.34ZM96,16a8,8,0,0,1,8-8h48a8,8,0,0,1,0,16H104A8,8,0,0,1,96,16Z"/></symbol>
+    <symbol id="ph-sparkle" viewBox="0 0 256 256"><path d="M197.58,129.06,146,110l-19-51.62a15.92,15.92,0,0,0-29.88,0L78,110l-51.62,19a15.92,15.92,0,0,0,0,29.88L78,178l19,51.62a15.92,15.92,0,0,0,29.88,0L146,178l51.62-19a15.92,15.92,0,0,0,0-29.88ZM137,164.22a8,8,0,0,0-4.74,4.74L112,223.85,91.78,169A8,8,0,0,0,87,164.22L32.15,144,87,123.78A8,8,0,0,0,91.78,119L112,64.15,132.22,119a8,8,0,0,0,4.74,4.74L191.85,144ZM144,40a8,8,0,0,1,8-8h16V16a8,8,0,0,1,16,0V32h16a8,8,0,0,1,0,16H184V64a8,8,0,0,1-16,0V48H152A8,8,0,0,1,144,40ZM248,88a8,8,0,0,1-8,8h-8v8a8,8,0,0,1-16,0V96h-8a8,8,0,0,1,0-16h8V72a8,8,0,0,1,16,0v8h8A8,8,0,0,1,248,88Z"/></symbol>
+    <symbol id="ph-stack" viewBox="0 0 256 256"><path d="M230.91,172A8,8,0,0,1,228,182.91l-96,56a8,8,0,0,1-8.06,0l-96-56A8,8,0,0,1,36,169.09l92,53.65,92-53.65A8,8,0,0,1,230.91,172ZM220,121.09l-92,53.65L36,121.09A8,8,0,0,0,28,134.91l96,56a8,8,0,0,0,8.06,0l96-56A8,8,0,1,0,220,121.09ZM24,80a8,8,0,0,1,4-6.91l96-56a8,8,0,0,1,8.06,0l96,56a8,8,0,0,1,0,13.82l-96,56a8,8,0,0,1-8.06,0l-96-56A8,8,0,0,1,24,80Zm23.88,0L128,126.74,208.12,80,128,33.26Z"/></symbol>
+    <symbol id="ph-link-simple" viewBox="0 0 256 256"><path d="M165.66,90.34a8,8,0,0,1,0,11.32l-64,64a8,8,0,0,1-11.32-11.32l64-64A8,8,0,0,1,165.66,90.34ZM215.6,40.4a56,56,0,0,0-79.2,0L106.34,70.45a8,8,0,0,0,11.32,11.32l30.06-30a40,40,0,0,1,56.57,56.56l-30.07,30.06a8,8,0,0,0,11.31,11.32L215.6,119.6a56,56,0,0,0,0-79.2ZM138.34,174.22l-30.06,30.06a40,40,0,1,1-56.56-56.57l30.05-30.05a8,8,0,0,0-11.32-11.32L40.4,136.4a56,56,0,0,0,79.2,79.2l30.06-30.07a8,8,0,0,0-11.32-11.31Z"/></symbol>
+    <symbol id="ph-bookmark-simple" viewBox="0 0 256 256"><path d="M184,32H72A16,16,0,0,0,56,48V224a8,8,0,0,0,12.24,6.78L128,193.43l59.77,37.35A8,8,0,0,0,200,224V48A16,16,0,0,0,184,32Zm0,177.57-51.77-32.35a8,8,0,0,0-8.48,0L72,209.57V48H184Z"/></symbol>
+    <symbol id="ph-newspaper" viewBox="0 0 256 256"><path d="M88,112a8,8,0,0,1,8-8h80a8,8,0,0,1,0,16H96A8,8,0,0,1,88,112Zm8,40h80a8,8,0,0,0,0-16H96a8,8,0,0,0,0,16ZM232,64V184a24,24,0,0,1-24,24H32A24,24,0,0,1,8,184.11V88a8,8,0,0,1,16,0v96a8,8,0,0,0,16,0V64A16,16,0,0,1,56,48H216A16,16,0,0,1,232,64Zm-16,0H56V184a23.84,23.84,0,0,1-1.37,8H208a8,8,0,0,0,8-8Z"/></symbol>
+    <symbol id="ph-scissors" viewBox="0 0 256 256"><path d="M157.73,113.13A8,8,0,0,1,159.82,102L227.48,55.7a8,8,0,0,1,9,13.21l-67.67,46.3a7.92,7.92,0,0,1-4.51,1.4A8,8,0,0,1,157.73,113.13Zm80.87,85.09a8,8,0,0,1-11.12,2.08L136,137.7,93.49,166.78a36,36,0,1,1-9-13.19L121.83,128,84.44,102.41a35.86,35.86,0,1,1,9-13.19l143,97.87A8,8,0,0,1,238.6,198.22ZM80,180a20,20,0,1,0-5.86,14.14A19.85,19.85,0,0,0,80,180ZM74.14,90.13a20,20,0,1,0-28.28,0A19.85,19.85,0,0,0,74.14,90.13Z"/></symbol>
+    <symbol id="ph-book-open" viewBox="0 0 256 256"><path d="M232,48H160a40,40,0,0,0-32,16A40,40,0,0,0,96,48H24a8,8,0,0,0-8,8V200a8,8,0,0,0,8,8H96a24,24,0,0,1,24,24,8,8,0,0,0,16,0,24,24,0,0,1,24-24h72a8,8,0,0,0,8-8V56A8,8,0,0,0,232,48ZM96,192H32V64H96a24,24,0,0,1,24,24V200A39.81,39.81,0,0,0,96,192Zm128,0H160a39.81,39.81,0,0,0-24,8V88a24,24,0,0,1,24-24h64Z"/></symbol>
+    <symbol id="ph-plus" viewBox="0 0 256 256"><path d="M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z"/></symbol>
+    <symbol id="ph-shield-check" viewBox="0 0 256 256"><path d="M208,40H48A16,16,0,0,0,32,56v56c0,52.72,25.52,84.67,46.93,102.19,23.06,18.86,46,25.26,47,25.53a8,8,0,0,0,4.2,0c1-.27,23.91-6.67,47-25.53C198.48,196.67,224,164.72,224,112V56A16,16,0,0,0,208,40Zm0,72c0,37.07-13.66,67.16-40.6,89.42A129.3,129.3,0,0,1,128,223.62a128.25,128.25,0,0,1-38.92-21.81C61.82,179.51,48,149.3,48,112l0-56,160,0ZM82.34,141.66a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32l-56,56a8,8,0,0,1-11.32,0Z"/></symbol>
+    <symbol id="ph-rss-simple" viewBox="0 0 256 256"><path d="M224,192a8,8,0,0,1-16,0c0-79.4-64.6-144-144-144a8,8,0,0,1,0-16C152.22,32,224,103.78,224,192ZM64,104a8,8,0,0,0,0,16,72.08,72.08,0,0,1,72,72,8,8,0,0,0,16,0A88.1,88.1,0,0,0,64,104Zm4,72a12,12,0,1,0,12,12A12,12,0,0,0,68,176Z"/></symbol>
+</svg>
+
+    <a class="skip-link button-sm" href="#main">Skip to content</a>
+
+    <header>
+        <nav class="site-nav" aria-label="Main">
+            <a class="nav-brand title-3" href="{{ url_for('landing') }}" aria-label="BrieflyAI, back to top">
+                <svg class="icon" aria-hidden="true"><use href="#ph-lightning-fill"></use></svg>
+                <span>BrieflyAI</span>
+            </a>
+            <ul class="nav-links title-4">
+                <li><a href="#why" data-spy>Why BrieflyAI</a></li>
+                <li><a href="#how" data-spy>How it works</a></li>
+                <li><a href="#sources" data-spy>Sources</a></li>
+                <li><a href="#faq" data-spy>FAQ</a></li>
+            </ul>
+            <a class="btn btn-primary button-sm nav-cta" href="{{ url_for('index') }}">Read today's briefing</a>
+            <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open menu">
+                <span class="nav-toggle-line" aria-hidden="true"></span>
+                <span class="nav-toggle-line" aria-hidden="true"></span>
+            </button>
+        </nav>
+    </header>
+
+    <div class="mobile-menu" id="mobileMenu" hidden>
+        <nav aria-label="Mobile">
+            <ul class="mobile-menu-list heading-5">
+                <li class="menu-item"><a href="#why" data-spy>Why BrieflyAI</a></li>
+                <li class="menu-item"><a href="#how" data-spy>How it works</a></li>
+                <li class="menu-item"><a href="#sources" data-spy>Sources</a></li>
+                <li class="menu-item"><a href="#faq" data-spy>FAQ</a></li>
+            </ul>
+        </nav>
+        <div class="menu-item">
+            <a class="btn btn-primary button-md" href="{{ url_for('index') }}">
+                Read today's briefing
+                <svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg>
+            </a>
+        </div>
+    </div>
+
+    <main id="main">
+        {# ================= HERO ================= #}
+        <section class="hero" id="top" aria-labelledby="hero-title">
+            <div class="container hero-inner">
+                <p class="hero-badge caption-4">
+                    <span class="live-dot" aria-hidden="true"></span>
+                    Free AI news briefings for India
+                </p>
+                <h1 class="hero-title heading-3 md:heading-2 lg:heading-1" id="hero-title"><span class="hero-title-text">India's news,<br> one minute per story</span></h1>
+                <p class="hero-sub body-3 md:body-7">
+                    Know what happened today without opening ten tabs. Every story gets a neutral summary of under 60 words and three or four key takeaways, with the original article one tap away.
+                </p>
+                <div class="hero-actions">
+                    <a class="btn btn-primary button-md" href="{{ url_for('index') }}">
+                        Read today's briefing
+                        <svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg>
+                    </a>
+                    <p class="caption-2 subtle">Free to read. No account or card needed.</p>
+                </div>
+                <div class="hero-proof">
+                    <p class="caption-4 subtle">Main feed from</p>
+                    <ul class="source-row title-4" aria-label="News sources in the main feed">
+                        {% for name in sources %}<li>{{ name }}</li>{% endfor %}
+                    </ul>
+                </div>
+
+                <div class="story-stack" data-reveal>
+                    <div class="story-ghost story-ghost-back" aria-hidden="true"></div>
+                    <div class="story-ghost story-ghost-mid" aria-hidden="true"></div>
+                    {% if sample_story %}
+                    <article class="story-card" aria-label="A real BrieflyAI summary">
+                        <div class="story-card-head">
+                            <span class="chip caption-3"><span class="live-dot" aria-hidden="true"></span>Real summary from BrieflyAI</span>
+                            <span class="caption-5 subtle">{{ sample_story.source }}{% if sample_story.published %} · {{ sample_story.published }}{% endif %}</span>
+                        </div>
+                        <p class="story-title title-1">{{ sample_story.title }}</p>
+                        <div class="story-block">
+                            <p class="story-block-label caption-3">AI summary</p>
+                            <p class="body-3">{{ sample_story.summary }}</p>
+                        </div>
+                        <div class="story-block">
+                            <p class="story-block-label caption-3">Key takeaways</p>
+                            <ul class="takeaways">
+                                {% for point in sample_story.takeaways %}
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">{{ point }}</span></li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                        <p class="story-foot">
+                            <a class="text-link button-sm" href="{{ sample_story.url }}">Open this story<svg class="icon icon-sm" aria-hidden="true"><use href="#ph-arrow-up-right"></use></svg></a>
+                        </p>
+                    </article>
+                    {% else %}
+                    <article class="story-card" aria-label="What every BrieflyAI summary contains">
+                        <div class="story-card-head">
+                            <span class="chip caption-3">How every summary looks</span>
+                            <span class="caption-5 subtle">Publisher · Time in IST</span>
+                        </div>
+                        <p class="story-title title-1">The publisher's headline, exactly as they wrote it</p>
+                        <div class="story-block">
+                            <p class="story-block-label caption-3">AI summary</p>
+                            <p class="body-3">A neutral summary of under 60 words. It opens with the single most important fact, so you know what changed before you decide to read further.</p>
+                        </div>
+                        <div class="story-block">
+                            <p class="story-block-label caption-3">Key takeaways</p>
+                            <ul class="takeaways">
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Three or four takeaways for every story.</span></li>
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Each one is a single sentence.</span></li>
+                                <li><svg class="icon" aria-hidden="true"><use href="#ph-check-circle"></use></svg><span class="body-6">Each stays under 20 words, so you can scan them.</span></li>
+                            </ul>
+                        </div>
+                        <p class="story-foot">
+                            <a class="text-link button-sm" href="{{ url_for('index') }}">See today's stories<svg class="icon icon-sm" aria-hidden="true"><use href="#ph-arrow-up-right"></use></svg></a>
+                        </p>
+                    </article>
+                    {% endif %}
+                </div>
+            </div>
+        </section>
+
+        {# ================= PROBLEM TO SOLUTION ================= #}
+        <section class="section" id="why" aria-labelledby="why-title">
+            <div class="container">
+                <div class="section-head" data-reveal>
+                    <p class="eyebrow caption-3">Why BrieflyAI</p>
+                    <h2 class="heading-4 md:heading-2" id="why-title">The news should not take your whole morning</h2>
+                    <p class="body-3 md:body-7 muted">Most of us skim the same story on three sites, click into a long article, and still have to hunt for the one fact that changed. BrieflyAI puts that fact first.</p>
+                </div>
+                <div class="compare" data-reveal>
+                    <div class="compare-card">
+                        <h3 class="title-2 muted">The usual routine</h3>
+                        <ul class="compare-list body-3 muted">
+                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Open several news sites to cover one day</li>
+                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Read the same story more than once</li>
+                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Scroll past background to find what changed</li>
+                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-x-circle"></use></svg>Close the tabs still unsure what mattered</li>
+                        </ul>
+                    </div>
+                    <div class="compare-card is-strong">
+                        <h3 class="title-2">With BrieflyAI</h3>
+                        <ul class="compare-list body-3">
+                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-check-circle"></use></svg>One feed built from {% if source_count_word %}{{ source_count_word }} {% endif %}major newsrooms</li>
+                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-check-circle"></use></svg>The main fact in the first sentence</li>
+                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-check-circle"></use></svg>Three or four takeaways you can scan</li>
+                            <li><svg class="icon compare-icon-gap" aria-hidden="true"><use href="#ph-check-circle"></use></svg>The original article one tap away</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        {# ================= BENEFITS ================= #}
+        <section class="section" id="benefits" aria-labelledby="benefits-title">
+            <div class="container">
+                <div class="section-head" data-reveal>
+                    <p class="eyebrow caption-3">What you get</p>
+                    <h2 class="heading-4 md:heading-2" id="benefits-title">Built for a quick read, not a long scroll</h2>
+                </div>
+                <div class="benefits">
+                    <div class="benefit benefit-wide" data-reveal>
+                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-timer"></use></svg></span>
+                        <h3 class="benefit-title title-1">The gist in under a minute</h3>
+                        <p class="benefit-text body-3">Every story is cut to a summary that leads with the most important fact, followed by three or four one sentence takeaways.</p>
+                        <dl class="spec-row">
+                            <div><dt class="spec-value heading-4">60</dt><dd class="spec-label caption-2">word limit for each summary</dd></div>
+                            <div><dt class="spec-value heading-4">3 to 4</dt><dd class="spec-label caption-2">takeaways for every story</dd></div>
+                            <div><dt class="spec-value heading-4">1 tap</dt><dd class="spec-label caption-2">to the original article</dd></div>
+                        </dl>
+                    </div>
+                    <div class="benefit" data-reveal>
+                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-sparkle"></use></svg></span>
+                        <h3 class="benefit-title title-1">The big picture first</h3>
+                        <p class="benefit-text body-3">A two sentence briefing at the top of the feed connects the day's main themes, with topic tags you can tap to search.</p>
+                    </div>
+                    <div class="benefit" data-reveal>
+                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-stack"></use></svg></span>
+                        <h3 class="benefit-title title-1">Major newsrooms, one feed</h3>
+                        <p class="benefit-text body-3">Stories from {{ sources_sentence }} land in one place, alongside the week's popular stories and yesterday's headlines.</p>
+                    </div>
+                    <div class="benefit" data-reveal>
+                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-link-simple"></use></svg></span>
+                        <h3 class="benefit-title title-1">Check anything at the source</h3>
+                        <p class="benefit-text body-3">Each summary links to the publisher's original article, so you can read the full reporting whenever a story matters to you.</p>
+                    </div>
+                    <div class="benefit" data-reveal>
+                        <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-bookmark-simple"></use></svg></span>
+                        <h3 class="benefit-title title-1">Save stories and join in</h3>
+                        <p class="benefit-text body-3">A free account lets you bookmark stories, react and reply in the comments, and post your own articles to the Community Hub.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        {# ================= TAGLINE REVEAL ================= #}
+        <section class="tagline-section" aria-label="What BrieflyAI is for">
+            <div class="container">
+                <p class="tagline heading-3 lg:heading-2" data-tagline>{% for word in tagline.split() %}<span class="word">{{ word }}</span>{% if not loop.last %} {% endif %}{% endfor %}</p>
+            </div>
+        </section>
+
+        {# ================= HOW IT WORKS ================= #}
+        <section class="section" id="how" aria-labelledby="how-title">
+            <div class="container">
+                <div class="section-head" data-reveal>
+                    <p class="eyebrow caption-3">How it works</p>
+                    <h2 class="heading-4 md:heading-2" id="how-title">From newsroom to takeaways in three steps</h2>
+                </div>
+                <ol class="steps">
+                    <li class="step" data-reveal>
+                        <div class="step-top">
+                            <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-newspaper"></use></svg></span>
+                            <span class="caption-3 subtle">Step 1</span>
+                        </div>
+                        <h3 class="step-title title-1">We collect the day's stories</h3>
+                        <p class="step-text body-3">New stories arrive through the day from the public news feeds of major Indian newsrooms, gathered into one feed.</p>
+                    </li>
+                    <li class="step" data-reveal>
+                        <div class="step-top">
+                            <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-scissors"></use></svg></span>
+                            <span class="caption-3 subtle">Step 2</span>
+                        </div>
+                        <h3 class="step-title title-1">AI condenses each one</h3>
+                        <p class="step-text body-3">When a story is opened, a language model writes a neutral summary and the key takeaways. It is saved, so the next reader gets it instantly.</p>
+                    </li>
+                    <li class="step" data-reveal>
+                        <div class="step-top">
+                            <span class="icon-tile"><svg class="icon" aria-hidden="true"><use href="#ph-book-open"></use></svg></span>
+                            <span class="caption-3 subtle">Step 3</span>
+                        </div>
+                        <h3 class="step-title title-1">You read, then go deeper</h3>
+                        <p class="step-text body-3">Skim the takeaways, open the original when you want the full report, or bookmark the story for later.</p>
+                    </li>
+                </ol>
+            </div>
+        </section>
+
+        {# ================= PROOF ================= #}
+        <section class="section" id="sources" aria-labelledby="sources-title">
+            <div class="container proof">
+                <div class="section-head" data-reveal>
+                    <p class="eyebrow caption-3">Sources</p>
+                    <h2 class="heading-4 md:heading-2" id="sources-title">Built on reporting from newsrooms you know</h2>
+                    <p class="body-3 md:body-7 muted">BrieflyAI never writes the news. Every summary is generated from a published article and links straight back to it.</p>
+                    <p class="proof-note body-6">
+                        <svg class="icon" aria-hidden="true"><use href="#ph-shield-check"></use></svg>
+                        <span>AI can miss nuance. When a story matters to you, the full original is always one tap away.</span>
+                    </p>
+                </div>
+                <div class="source-grid" data-reveal>
+                    {% if weekly_summaries %}
+                    <div class="stat-tile">
+                        <span class="heading-3">{{ "{:,}".format(weekly_summaries) }}</span>
+                        <span class="caption-2">stories summarized on BrieflyAI in the last 7 days</span>
+                    </div>
+                    {% endif %}
+                    {% for name in sources %}
+                    <div class="source-tile">
+                        <span class="title-2">{{ name }}</span>
+                        <span class="caption-5">In the main feed</span>
+                    </div>
+                    {% endfor %}
+                    <div class="source-tile">
+                        <span class="title-2 muted">Other outlets</span>
+                        <span class="caption-5">In popular stories and yesterday's headlines</span>
+                    </div>
+                </div>
+                {#
+                  TESTIMONIALS: add real reader quotes here once you have them, with the reader's
+                  permission. Never publish invented quotes. Suggested markup:
+                  <figure class="source-tile"><blockquote class="body-3">{{ testimonial }}</blockquote>
+                  <figcaption class="caption-4 subtle">{{ reader_name }}, {{ reader_city }}</figcaption></figure>
+                #}
+            </div>
+        </section>
+
+        {# ================= FAQ ================= #}
+        <section class="section" id="faq" aria-labelledby="faq-title">
+            <div class="container faq">
+                <div class="section-head" data-reveal>
+                    <p class="eyebrow caption-3">FAQ</p>
+                    <h2 class="heading-4 md:heading-2" id="faq-title">Questions, answered</h2>
+                    <p class="body-3 muted">Something else on your mind? <a class="text-link" href="{{ url_for('contact') }}">Get in touch</a>.</p>
+                </div>
+                <div class="faq-list" data-reveal>
+                    {% for item in faqs %}
+                    <details class="faq-item">
+                        <summary class="title-3">{{ item.q }}<svg class="icon" aria-hidden="true"><use href="#ph-plus"></use></svg></summary>
+                        <p class="faq-answer body-3">{{ item.a }}</p>
+                    </details>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+
+        {# ================= FINAL CTA ================= #}
+        <section class="section" id="start" aria-labelledby="start-title">
+            <div class="container">
+                <div class="cta-panel" data-reveal>
+                    <h2 class="heading-4 md:heading-2" id="start-title">Start with today's briefing</h2>
+                    <p class="cta-text body-3 md:body-7">Free to read, with no account and no card. Create a free account later if you want to save stories or join the discussion.</p>
+                    <div class="hero-actions">
+                        <a class="btn btn-primary button-md" href="{{ url_for('index') }}">
+                            Read today's briefing
+                            <svg class="icon icon-arrow" aria-hidden="true"><use href="#ph-arrow-right"></use></svg>
+                        </a>
+                        {% if not session.user_id %}
+                        <a class="text-link caption-2" href="{{ url_for('register') }}">Create a free account</a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <div class="footer-top">
+                <div>
+                    <a class="footer-brand title-3" href="{{ url_for('landing') }}">
+                        <svg class="icon" aria-hidden="true"><use href="#ph-lightning-fill"></use></svg>
+                        <span>BrieflyAI</span>
+                    </a>
+                    <p class="body-6 muted" style="margin-top: var(--spacing-100); max-width: 320px;">Short AI summaries and key takeaways for India's top stories.</p>
+                </div>
+                <nav class="footer-col" aria-label="Read">
+                    <h2 class="title-4">Read</h2>
+                    <ul class="body-6">
+                        <li><a href="{{ url_for('index') }}">Today's briefing</a></li>
+                        <li><a href="{{ url_for('index', category_name='Popular Stories', page=1) }}">Popular stories</a></li>
+                        <li><a href="{{ url_for('index', category_name='Community Hub', page=1) }}">Community Hub</a></li>
+                        <li><a href="{{ url_for('rss_feed') }}">RSS feed</a></li>
+                    </ul>
+                </nav>
+                <nav class="footer-col" aria-label="Company">
+                    <h2 class="title-4">BrieflyAI</h2>
+                    <ul class="body-6">
+                        <li><a href="{{ url_for('about') }}">About</a></li>
+                        <li><a href="{{ url_for('contact') }}">Contact</a></li>
+                        <li><a href="{{ url_for('privacy') }}">Privacy policy</a></li>
+                    </ul>
+                </nav>
+            </div>
+            <div class="footer-bottom caption-5">
+                <span>&copy; {{ current_year }} BrieflyAI. Made in India.</span>
+                <span>Summaries are AI generated. Always check the original for the full story.</span>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+    (function () {
+        var root = document.documentElement;
+        root.classList.add('js');
+        var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        /* --- Mobile menu ------------------------------------------------------ */
+        var toggle = document.getElementById('navToggle');
+        var menu = document.getElementById('mobileMenu');
+        var page = [document.getElementById('main'), document.querySelector('.site-footer')];
+        var items = menu ? Array.prototype.slice.call(menu.querySelectorAll('.menu-item')) : [];
+        var hideTimer = null;
+
+        function setInert(on) {
+            page.forEach(function (el) { if (el) { if (on) { el.setAttribute('inert', ''); } else { el.removeAttribute('inert'); } } });
+        }
+        function openMenu() {
+            clearTimeout(hideTimer);
+            menu.hidden = false;
+            void menu.offsetWidth; /* commit the hidden state so the entrance animates */
+            items.forEach(function (el, i) { el.style.transitionDelay = Math.min(i * 60, 400) + 'ms'; });
+            menu.classList.add('is-open');
+            toggle.setAttribute('aria-expanded', 'true');
+            toggle.setAttribute('aria-label', 'Close menu');
+            root.classList.add('menu-open');
+            setInert(true);
+        }
+        function closeMenu(returnFocus) {
+            items.forEach(function (el) { el.style.transitionDelay = '0ms'; });
+            menu.classList.remove('is-open');
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.setAttribute('aria-label', 'Open menu');
+            root.classList.remove('menu-open');
+            setInert(false);
+            hideTimer = setTimeout(function () { menu.hidden = true; }, 300);
+            if (returnFocus) { toggle.focus(); }
+        }
+        if (toggle && menu) {
+            toggle.addEventListener('click', function () {
+                if (menu.classList.contains('is-open')) { closeMenu(false); } else { openMenu(); }
+            });
+            menu.addEventListener('click', function (e) { if (e.target.closest('a')) { closeMenu(false); } });
+            document.addEventListener('keydown', function (e) {
+                if (!menu.classList.contains('is-open')) { return; }
+                if (e.key === 'Escape') { closeMenu(true); return; }
+                if (e.key === 'Tab') {
+                    var focusables = [toggle].concat(Array.prototype.slice.call(menu.querySelectorAll('a')));
+                    var first = focusables[0], last = focusables[focusables.length - 1];
+                    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+                }
+            });
+            var desktop = window.matchMedia('(min-width: 768px)');
+            var onBreakpoint = function (e) { if (e.matches && menu.classList.contains('is-open')) { closeMenu(false); } };
+            if (desktop.addEventListener) { desktop.addEventListener('change', onBreakpoint); }
+        }
+
+        if (!('IntersectionObserver' in window)) {
+            document.querySelectorAll('[data-reveal]').forEach(function (el) { el.classList.add('is-visible'); });
+            document.querySelectorAll('.tagline .word').forEach(function (el) { el.classList.add('is-on'); });
+            return;
+        }
+
+        /* --- Scroll reveals: each section once, never replayed ----------------- */
+        var revealObserver = new IntersectionObserver(function (entries, obs) {
+            entries.forEach(function (entry) {
+                if (entry.isIntersecting) { entry.target.classList.add('is-visible'); obs.unobserve(entry.target); }
+            });
+        }, { rootMargin: '0px 0px -10% 0px', threshold: 0 });
+        document.querySelectorAll('[data-reveal]').forEach(function (el) { revealObserver.observe(el); });
+
+        /* --- Current section in the nav ---------------------------------------- */
+        var spyLinks = Array.prototype.slice.call(document.querySelectorAll('[data-spy]'));
+        var sectionIds = [];
+        spyLinks.forEach(function (a) { var id = a.getAttribute('href').slice(1); if (sectionIds.indexOf(id) === -1) { sectionIds.push(id); } });
+        function setCurrent(id) {
+            spyLinks.forEach(function (a) {
+                var on = a.getAttribute('href') === '#' + id;
+                a.classList.toggle('is-current', on);
+                if (on) { a.setAttribute('aria-current', 'true'); } else { a.removeAttribute('aria-current'); }
+            });
+        }
+        var spyObserver = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) { if (entry.isIntersecting) { setCurrent(entry.target.id); } });
+        }, { rootMargin: '-45% 0px -50% 0px' });
+        ['top'].concat(sectionIds).forEach(function (id) { var el = document.getElementById(id); if (el) { spyObserver.observe(el); } });
+
+        /* --- Tagline: words light up one at a time, in reading order ------------- */
+        var tagline = document.querySelector('[data-tagline]');
+        if (tagline) {
+            var words = tagline.querySelectorAll('.word');
+            if (reduceMotion) {
+                Array.prototype.forEach.call(words, function (w) { w.classList.add('is-on'); });
+            } else {
+                var shown = 0, ticking = false;
+                var update = function () {
+                    ticking = false;
+                    var rect = tagline.getBoundingClientRect();
+                    var vh = window.innerHeight;
+                    var start = vh * 0.85, end = vh * 0.45;
+                    var progress = (start - rect.top) / (rect.height + (start - end));
+                    progress = Math.max(0, Math.min(1, progress));
+                    var target = Math.round(progress * words.length);
+                    var batch = 0;
+                    while (shown < target) {
+                        words[shown].style.transitionDelay = (batch * 40) + 'ms';
+                        words[shown].classList.add('is-on');
+                        shown++; batch++;
+                    }
+                    if (shown >= words.length) {
+                        window.removeEventListener('scroll', onScroll);
+                        window.removeEventListener('resize', onScroll);
+                    }
+                };
+                var onScroll = function () { if (!ticking) { ticking = true; window.requestAnimationFrame(update); } };
+                window.addEventListener('scroll', onScroll, { passive: true });
+                window.addEventListener('resize', onScroll);
+                update();
+            }
+        }
+    })();
+
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
+    }
+    </script>
+</body>
+</html>
+"""
+
 # ==============================================================================
 # --- 8. Add all templates to the template_storage dictionary ---
 # ==============================================================================
@@ -5930,6 +7143,7 @@ template_storage['500_TEMPLATE'] = ERROR_500_TEMPLATE
 template_storage['_COMMENT_TEMPLATE'] = _COMMENT_TEMPLATE
 template_storage['PUBLIC_PROFILE_HTML_TEMPLATE'] = PUBLIC_PROFILE_HTML_TEMPLATE
 template_storage['OFFLINE_TEMPLATE'] = OFFLINE_TEMPLATE
+template_storage['LANDING_HTML_TEMPLATE'] = LANDING_HTML_TEMPLATE
 
 
 # ==============================================================================
