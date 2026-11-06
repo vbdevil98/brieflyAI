@@ -152,11 +152,47 @@ using_postgres_flag = False
 # --- MODIFIED Data Persistence ---
 app.logger.info(f"--- Database Configuration ---")
 app.logger.info(f"Attempting to read DATABASE_URL environment variable...")
-# PRIMARY_DATABASE_URL is the permanent database (Supabase). DATABASE_URL is Render's free
-# database, which Render deletes 30 days after it is created. When both are set the app runs
-# on the primary one and, on its first start, copies every table across from DATABASE_URL
-# (see import_legacy_database), so moving to permanent storage never loses an account.
+SUPABASE_PROJECT_REF = (os.environ.get('SUPABASE_PROJECT_REF') or 'szxesgdqoenhcnawwscm').strip()
+SUPABASE_REGION = (os.environ.get('SUPABASE_REGION') or 'ap-southeast-1').strip()
+
+
+def _supabase_url_from_password(password):
+    """
+    Build the Supabase connection string from just the database password, so setting up
+    needs one value instead of a hand-edited URL. Supabase runs its connection pooler on
+    two clusters per region; the one that accepts this project's login is used.
+    Session pooler (port 5432) works from Render, which cannot reach Supabase over IPv6.
+    """
+    import psycopg2
+    user = (os.environ.get('SUPABASE_DB_USER') or f'postgres.{SUPABASE_PROJECT_REF}').strip()
+    port = int(os.environ.get('SUPABASE_POOLER_PORT') or 5432)
+    name = (os.environ.get('SUPABASE_DB_NAME') or 'postgres').strip()
+    pinned = (os.environ.get('SUPABASE_POOLER_HOST') or '').strip()
+    hosts = [pinned] if pinned else [f'aws-0-{SUPABASE_REGION}.pooler.supabase.com',
+                                     f'aws-1-{SUPABASE_REGION}.pooler.supabase.com']
+    sslmode = (os.environ.get('SUPABASE_SSLMODE') or 'require').strip()
+    errors = []
+    for host in hosts:
+        url = (f"postgresql://{urllib.parse.quote(user, safe='')}:{urllib.parse.quote(password, safe='')}"
+               f"@{host}:{port}/{name}?sslmode={sslmode}")
+        try:
+            psycopg2.connect(url, connect_timeout=10).close()
+            app.logger.info(f"Supabase: connected through {host} as {user}.")
+            return url
+        except psycopg2.OperationalError as e:
+            # The message never contains the password; keep only its first line.
+            errors.append(f"{host}: {str(e).strip().splitlines()[0] if str(e).strip() else 'connection failed'}")
+    raise RuntimeError("Could not sign in to the Supabase database with SUPABASE_DB_PASSWORD. "
+                       "Check the password was copied in full. Tried: " + " | ".join(errors))
+
+
+# PRIMARY_DATABASE_URL (or just SUPABASE_DB_PASSWORD) is the permanent database. DATABASE_URL
+# is Render's free database, which Render deletes 30 days after it is created. When both are
+# set the app runs on the primary one and, on its first start, copies every table across
+# from DATABASE_URL (see import_legacy_database), so the move never loses an account.
 primary_database_url = (os.environ.get('PRIMARY_DATABASE_URL') or '').strip()
+if not primary_database_url and (os.environ.get('SUPABASE_DB_PASSWORD') or '').strip():
+    primary_database_url = _supabase_url_from_password(os.environ['SUPABASE_DB_PASSWORD'].strip())
 legacy_database_url = (os.environ.get('DATABASE_URL') or '').strip()
 database_url = primary_database_url or legacy_database_url
 
