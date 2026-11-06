@@ -103,6 +103,33 @@ app.config.update(
 
 # The admin account is configurable rather than hardcoded.
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'vbdevil').strip().lower()
+
+# --- Google AdSense -------------------------------------------------------------------
+# Accepts "ca-pub-123..." or "pub-123...". Ads only load on reading pages (ADS_ENDPOINTS).
+def _adsense_client(raw):
+    match = re.fullmatch(r'(?:ca-)?(pub-\d{10,20})', (raw or '').strip())
+    return 'ca-' + match.group(1) if match else ''
+
+
+# The site's own AdSense account. Set ADSENSE_CLIENT_ID to override it, or to "off" to remove all ads.
+ADSENSE_DEFAULT_CLIENT = 'pub-6975904325280886'
+ADSENSE_CLIENT_ID = _adsense_client(os.environ.get('ADSENSE_CLIENT_ID') or ADSENSE_DEFAULT_CLIENT)
+# Optional fixed ad units (numeric slot ids from AdSense > Ads > By ad unit). Auto ads
+# work without them; these only reserve tidy, labelled spaces in the layout.
+ADSENSE_SLOTS = {
+    name: slot for name, slot in (
+        (name, (os.environ.get(f'ADSENSE_SLOT_{name.upper()}') or '').strip()) for name in ('feed', 'article', 'list'))
+    if re.fullmatch(r'\d{6,20}', slot)
+}
+ADSENSE_ON_LANDING = (os.environ.get('ADSENSE_ON_LANDING') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+# Pages with real reading content. AdSense policy keeps ads off sign in, account, error and
+# thank you pages, so those are never listed here.
+ADS_ENDPOINTS = {'index', 'article_detail', 'search_results'} | ({'landing'} if ADSENSE_ON_LANDING else set())
+# Extra ads.txt lines for other ad networks, separated by ";" or new lines.
+# Google Analytics 4 measurement id; set GA_MEASUREMENT_ID to "off" to remove analytics.
+_ga = (os.environ.get('GA_MEASUREMENT_ID') or 'G-CV5LWJ7NQ7').strip()
+GA_MEASUREMENT_ID = _ga if re.fullmatch(r'G-[A-Z0-9]{4,16}', _ga) else ''
+ADS_TXT_EXTRA = [line.strip() for line in re.split(r'[;\n]', os.environ.get('ADS_TXT_EXTRA') or '') if line.strip()]
 app.config['PER_PAGE'] = 9
 app.config['CATEGORIES'] = ['All Articles', 'Popular Stories', "Yesterday's Headlines", 'Community Hub']
 
@@ -125,7 +152,13 @@ using_postgres_flag = False
 # --- MODIFIED Data Persistence ---
 app.logger.info(f"--- Database Configuration ---")
 app.logger.info(f"Attempting to read DATABASE_URL environment variable...")
-database_url = os.environ.get('DATABASE_URL') # Using 'database_url' for the value from environment
+# PRIMARY_DATABASE_URL is the permanent database (Supabase). DATABASE_URL is Render's free
+# database, which Render deletes 30 days after it is created. When both are set the app runs
+# on the primary one and, on its first start, copies every table across from DATABASE_URL
+# (see import_legacy_database), so moving to permanent storage never loses an account.
+primary_database_url = (os.environ.get('PRIMARY_DATABASE_URL') or '').strip()
+legacy_database_url = (os.environ.get('DATABASE_URL') or '').strip()
+database_url = primary_database_url or legacy_database_url
 
 if database_url: 
     app.logger.info(f"DATABASE_URL found. Raw value (prefix): '{database_url[:30]}...'") # Log prefix for security
@@ -148,6 +181,9 @@ if database_url and (database_url.startswith("postgres://") or database_url.star
     # 'postgresql://' URL, but this app installs psycopg2-binary, so an unpinned fresh build
     # crashed at startup with "No module named 'psycopg'".
     configured_db_uri = configured_db_uri.replace("postgresql://", "postgresql+psycopg2://", 1)
+    # Supabase only accepts encrypted connections from outside its network.
+    if 'supabase.' in configured_db_uri and 'sslmode=' not in configured_db_uri:
+        configured_db_uri += ('&' if '?' in configured_db_uri else '?') + 'sslmode=require'
 
     app.config['SQLALCHEMY_DATABASE_URI'] = configured_db_uri
     uri_to_log = configured_db_uri
@@ -184,6 +220,38 @@ else:
     app.logger.info(f"SQLAlchemy URI configured for SQLite: {app.config['SQLALCHEMY_DATABASE_URI']}")
     # using_postgres_flag remains False (as initialized)
 
+def _postgres_uri(url):
+    """Normalise a postgres:// URL for the psycopg2 driver, or None if it is not Postgres."""
+    if not url or not url.startswith(("postgres://", "postgresql://")):
+        return None
+    url = url.replace("postgres://", "postgresql://", 1).replace("postgresql://", "postgresql+psycopg2://", 1)
+    if 'supabase.' in url and 'sslmode=' not in url:
+        url += ('&' if '?' in url else '?') + 'sslmode=require'
+    return url
+
+
+# The database to copy from once, when the app has just been pointed at a new primary.
+LEGACY_DATABASE_URI = None
+if primary_database_url and legacy_database_url:
+    _legacy = _postgres_uri(legacy_database_url)
+    if _legacy and _legacy != _postgres_uri(primary_database_url):
+        LEGACY_DATABASE_URI = _legacy
+
+_active_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
+if 'supabase.' in _active_uri:
+    DATABASE_PROVIDER = 'Supabase'
+elif 'render.com' in _active_uri or '@dpg-' in _active_uri:
+    DATABASE_PROVIDER = 'Render (free databases are deleted 30 days after creation)'
+elif _active_uri.startswith('postgresql'):
+    DATABASE_PROVIDER = 'PostgreSQL'
+else:
+    DATABASE_PROVIDER = 'SQLite (local file)'
+try:
+    DATABASE_LIMIT_MB = int(os.environ.get('DATABASE_LIMIT_MB') or 0) or (
+        500 if DATABASE_PROVIDER == 'Supabase' else 1024 if DATABASE_PROVIDER.startswith('Render') else 0)
+except ValueError:
+    DATABASE_LIMIT_MB = 0
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     # Managed Postgres drops idle connections; without these, the first query after an
@@ -191,6 +259,11 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_pre_ping': True,
     'pool_recycle': 280,
 }
+if using_postgres_flag:
+    # Stay well inside the free connection limits of hosted Postgres poolers.
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'].update({
+        'pool_size': 5, 'max_overflow': 5, 'connect_args': {'connect_timeout': 10},
+    })
 db = SQLAlchemy(app) 
 app.logger.info(f"SQLAlchemy instance created.")
 app.logger.info(f"--- End of Database Configuration ---")
@@ -630,6 +703,218 @@ class Testimonial(db.Model):
     user = db.relationship('User', backref=db.backref('testimonials', lazy='dynamic', cascade="all, delete-orphan"))
 
 
+class AppMeta(db.Model):
+    """Small key/value store for housekeeping state: the one-time data import and clean ups."""
+    __tablename__ = 'app_meta'
+    key = db.Column(db.String(64), primary_key=True)
+    value = db.Column(db.Text, nullable=True)
+    updated_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
+
+
+def _meta_get(key):
+    row = db.session.get(AppMeta, key)
+    if not row or not row.value:
+        return None
+    try:
+        return json.loads(row.value)
+    except ValueError:
+        return None
+
+
+def _meta_set(key, value):
+    row = db.session.get(AppMeta, key) or AppMeta(key=key)
+    row.value = json.dumps(value, default=str)
+    db.session.add(row)
+    db.session.commit()
+
+
+LEGACY_IMPORT_KEY = 'legacy_import'
+LEGACY_IMPORT_LOCK = 724001  # any constant; serialises the import across workers
+
+
+def import_legacy_database():
+    """
+    Copy every table from the old database (DATABASE_URL) into the new primary database,
+    exactly once. Runs in a single transaction: either everything arrives or nothing does.
+    If the copy fails the app refuses to start, so the previous deploy (still on the old
+    database) keeps serving instead of a new, empty site.
+    """
+    from sqlalchemy import create_engine, inspect as sa_inspect, insert, select, text
+    if db.engine.dialect.name != 'postgresql':
+        app.logger.warning("Data import skipped: the primary database is not PostgreSQL.")
+        return
+    meta = AppMeta.__table__
+    started = time.time()
+    with db.engine.connect() as conn:
+        # Transaction scoped lock: works through Supabase's pooler in both session and
+        # transaction mode, and is released automatically on commit or rollback.
+        conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {'k': LEGACY_IMPORT_LOCK})
+        if conn.execute(select(meta.c.value).where(meta.c.key == LEGACY_IMPORT_KEY)).first():
+            conn.rollback()
+            app.logger.info("Data import: already done on an earlier start, nothing to copy.")
+            return
+        if conn.execute(select(func.count()).select_from(User.__table__)).scalar():
+            conn.execute(insert(meta).values(
+                key=LEGACY_IMPORT_KEY, updated_at=datetime.now(timezone.utc),
+                value=json.dumps({'status': 'skipped', 'reason': 'the new database already had accounts',
+                                  'at': datetime.now(timezone.utc).isoformat()})))
+            conn.commit()
+            app.logger.warning("Data import skipped: the new database already has accounts.")
+            return
+
+        legacy = create_engine(LEGACY_DATABASE_URI, pool_pre_ping=True, connect_args={'connect_timeout': 15})
+        try:
+            inspector = sa_inspect(legacy)
+            legacy_tables = set(inspector.get_table_names())
+            counts = {}
+            with legacy.connect() as source:
+                for table in db.metadata.sorted_tables:  # parents before children
+                    if table.name == meta.name or table.name not in legacy_tables:
+                        continue
+                    present = {c['name'] for c in inspector.get_columns(table.name)}
+                    columns = [c for c in table.columns if c.name in present]
+                    query = select(*columns)
+                    if 'id' in present:
+                        query = query.order_by(table.c.id)  # replies after the comments they answer
+                    result = source.execution_options(stream_results=True, yield_per=500).execute(query).mappings()
+                    copied = 0
+                    for batch in result.partitions(500):
+                        conn.execute(insert(table), [dict(row) for row in batch])
+                        copied += len(batch)
+                    counts[table.name] = copied
+                    if 'id' in table.c and isinstance(table.c.id.type, db.Integer):
+                        # Continue numbering after the copied rows, or the next insert collides.
+                        conn.execute(text(
+                            f"SELECT setval(pg_get_serial_sequence('\"{table.name}\"', 'id'), "
+                            f"COALESCE((SELECT MAX(id) FROM \"{table.name}\"), 0) + 1, false)"))
+            conn.execute(insert(meta).values(
+                key=LEGACY_IMPORT_KEY, updated_at=datetime.now(timezone.utc),
+                value=json.dumps({'status': 'done', 'rows': counts, 'seconds': round(time.time() - started, 1),
+                                  'at': datetime.now(timezone.utc).isoformat()})))
+            conn.commit()
+            app.logger.info(f"Data import finished in {time.time() - started:.1f}s: {counts}")
+        except Exception:
+            conn.rollback()
+            app.logger.error("Data import FAILED. Nothing was written to the new database; "
+                             "the app will not start on an empty database.", exc_info=True)
+            raise
+        finally:
+            legacy.dispose()
+
+
+# --- Automatic clean up ---------------------------------------------------------------
+# Summaries and view counts are the only tables that grow with every news cycle. Old ones
+# are dropped unless a reader bookmarked or discussed the story. A summary that is dropped
+# is simply generated again if anyone opens that story later.
+ANALYSIS_RETENTION_DAYS = int(os.environ.get('ANALYSIS_RETENTION_DAYS') or os.environ.get('RETAIN_ANALYSIS_DAYS') or 120)
+STATS_RETENTION_DAYS = int(os.environ.get('STATS_RETENTION_DAYS') or os.environ.get('RETAIN_STATS_DAYS') or 90)
+CLEANUP_KEY = 'last_cleanup'
+CLEANUP_EVERY_SECONDS = 24 * 3600
+_cleanup_state = {'checked_at': 0.0, 'running': False}
+_cleanup_lock = threading.Lock()
+
+
+def prune_old_data():
+    """Delete stale summaries and view counts. Returns how many rows went."""
+    from sqlalchemy import select
+    now = datetime.now(timezone.utc)
+    bookmarked = select(BookmarkedArticle.article_hash_id)
+    discussed = select(Comment.api_article_hash_id).where(Comment.api_article_hash_id.isnot(None))
+    analyses = (ArticleAnalysis.query
+                .filter(ArticleAnalysis.created_at < now - timedelta(days=ANALYSIS_RETENTION_DAYS),
+                        ArticleAnalysis.article_hash_id.notin_(bookmarked),
+                        ArticleAnalysis.article_hash_id.notin_(discussed))
+                .delete(synchronize_session=False))
+    stats = (ArticleStat.query
+             .filter(db.or_(ArticleStat.last_viewed_at.is_(None),
+                            ArticleStat.last_viewed_at < now - timedelta(days=STATS_RETENTION_DAYS)))
+             .delete(synchronize_session=False))
+    db.session.commit()
+    result = {'summaries': analyses, 'view_counts': stats, 'at': now.isoformat()}
+    _meta_set(CLEANUP_KEY, result)
+    app.logger.info(f"Clean up removed {analyses} old summaries and {stats} old view counts.")
+    return result
+
+
+def _cleanup_worker():
+    try:
+        with app.app_context():
+            last = _meta_get(CLEANUP_KEY) or {}
+            try:
+                last_at = datetime.fromisoformat(last.get('at', ''))
+            except ValueError:
+                last_at = None
+            if last_at and (datetime.now(timezone.utc) - last_at).total_seconds() < CLEANUP_EVERY_SECONDS:
+                return
+            prune_old_data()
+    except Exception as e:
+        app.logger.error(f"Automatic clean up failed: {e}", exc_info=True)
+    finally:
+        _cleanup_state['running'] = False
+        try:
+            with app.app_context():
+                db.session.remove()
+        except Exception:
+            pass
+
+
+@app.before_request
+def schedule_cleanup():
+    """At most once an hour, check in the background whether a daily clean up is due."""
+    if time.time() - _cleanup_state['checked_at'] < 3600 or app.config.get('TESTING'):
+        return
+    with _cleanup_lock:
+        if _cleanup_state['running'] or time.time() - _cleanup_state['checked_at'] < 3600:
+            return
+        _cleanup_state['checked_at'] = time.time()
+        _cleanup_state['running'] = True
+    threading.Thread(target=_cleanup_worker, name='cleanup', daemon=True).start()
+
+
+def database_storage_report():
+    """Size of the database and each table, for the admin storage page."""
+    from sqlalchemy import select, text
+    report = {'provider': DATABASE_PROVIDER, 'limit_mb': DATABASE_LIMIT_MB, 'size_bytes': None, 'tables': [],
+              'data_copy': _meta_get(LEGACY_IMPORT_KEY), 'cleanup': _meta_get(CLEANUP_KEY),
+              'retention': {'summaries': ANALYSIS_RETENTION_DAYS, 'view_counts': STATS_RETENTION_DAYS}}
+    is_pg = db.engine.dialect.name == 'postgresql'
+    if is_pg:
+        report['size_bytes'] = db.session.execute(text("SELECT pg_database_size(current_database())")).scalar()
+    else:
+        try:
+            report['size_bytes'] = os.path.getsize(db.engine.url.database)
+        except (OSError, TypeError):
+            pass
+    for table in db.metadata.sorted_tables:
+        rows = db.session.execute(select(func.count()).select_from(table)).scalar()
+        size = None
+        if is_pg:
+            size = db.session.execute(text("SELECT pg_total_relation_size(CAST(:t AS regclass))"),
+                                      {'t': f'"{table.name}"'}).scalar()
+        report['tables'].append({'name': table.name, 'rows': rows, 'bytes': size})
+    report['tables'].sort(key=lambda t: (t['bytes'] or 0, t['rows']), reverse=True)
+    if report['size_bytes'] and DATABASE_LIMIT_MB:
+        report['percent'] = min(100.0, round(report['size_bytes'] / (DATABASE_LIMIT_MB * 1024 * 1024) * 100, 1))
+    return report
+
+
+def lock_down_public_tables():
+    """
+    Supabase publishes the public schema through its REST API with a key anyone can read
+    from a web page. Row level security with no policies closes that door completely. The
+    app's own connection owns these tables, so it is not affected.
+    """
+    from sqlalchemy import text
+    try:
+        with db.engine.begin() as conn:
+            for table in db.metadata.sorted_tables:
+                conn.execute(text(f'ALTER TABLE "{table.name}" ENABLE ROW LEVEL SECURITY'))
+        app.logger.info("Row level security is on for every table (no public API access).")
+    except Exception as e:
+        app.logger.error(f"Could not enable row level security: {e}", exc_info=True)
+
+
 def init_db():
     # To access the global 'using_postgres_flag' set earlier
     global using_postgres_flag
@@ -662,6 +947,10 @@ def init_db():
             app.logger.info("db.create_all() executed successfully. Tables should be ready or already exist.")
         except Exception as e:
             app.logger.error(f"Error during db.create_all(): {e}", exc_info=True)
+        if 'supabase.' in str(db.engine.url):
+            lock_down_public_tables()
+        if LEGACY_DATABASE_URI:
+            import_legacy_database()  # raises on failure so we never serve an empty database
         app.logger.info("--- End of Database Initialization (init_db) ---")
 
 # ==============================================================================
@@ -2463,15 +2752,6 @@ def page_not_found(e): return render_template("404_TEMPLATE"), 404
 @app.errorhandler(500)
 def internal_server_error(e): db.session.rollback(); app.logger.error(f"500 error at {request.url}: {e}", exc_info=True); return render_template("500_TEMPLATE"), 500
 
-@app.route('/ads.txt')
-def ads_txt():
-    # Ensure this is your correct AdSense Publisher ID
-    ads_content = "google.com, pub-6975904325280886, DIRECT, f08c47fec0942fa0"
-    # If you have other ad partners, add their lines here, each on a new line.
-    # e.g., ads_content += "\notheradsystem.com, theirPubId, DIRECT, theirTagId"
-    return Response(ads_content, mimetype='text/plain')
-
-
 # ==============================================================================
 # --- 6b. Discovery, syndication, PWA and operations endpoints ---
 # ==============================================================================
@@ -2562,6 +2842,62 @@ def sitemap():
     return Response(xml, mimetype='application/xml')
 
 
+@app.context_processor
+def inject_ads():
+    on_page = bool(ADSENSE_CLIENT_ID) and request.endpoint in ADS_ENDPOINTS
+    return {'adsense_client': ADSENSE_CLIENT_ID, 'ads_on_page': on_page,
+            'ad_slots': ADSENSE_SLOTS if on_page else {}, 'ga_measurement_id': GA_MEASUREMENT_ID}
+
+
+@app.route('/ads.txt')
+def ads_txt():
+    """Authorised sellers file. Without it AdSense rejects every ad request from the site."""
+    lines = []
+    if ADSENSE_CLIENT_ID:
+        lines.append(f"google.com, {ADSENSE_CLIENT_ID[3:]}, DIRECT, f08c47fec0942fa0")
+    lines.extend(ADS_TXT_EXTRA)
+    if not lines:
+        abort(404)
+    return Response("\n".join(lines) + "\n", mimetype='text/plain',
+                    headers={'Cache-Control': 'public, max-age=3600'})
+
+
+@app.route('/admin/storage')
+def admin_storage():
+    if not _is_admin():
+        abort(403)
+    return render_template("ADMIN_STORAGE_HTML_TEMPLATE", report=database_storage_report())
+
+
+@app.route('/admin/storage/cleanup', methods=['POST'])
+def admin_storage_cleanup():
+    if not _is_admin():
+        abort(403)
+    try:
+        result = prune_old_data()
+        flash(f"Clean up done: removed {result['summaries']} old summaries and {result['view_counts']} old view counts.", 'success')
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Manual clean up failed: {e}", exc_info=True)
+        flash("The clean up could not run. Check the logs.", 'danger')
+    return redirect(url_for('admin_storage'))
+
+
+@app.route('/admin/storage/backup.json')
+def admin_storage_backup():
+    """Full copy of every table as JSON. Free databases have no automatic backups."""
+    from sqlalchemy import select
+    if not _is_admin():
+        abort(403)
+    data = {'generated_at': datetime.now(timezone.utc).isoformat(), 'provider': DATABASE_PROVIDER, 'tables': {}}
+    for table in db.metadata.sorted_tables:
+        data['tables'][table.name] = [dict(row) for row in db.session.execute(select(table)).mappings()]
+    stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    return Response(json.dumps(data, default=str, ensure_ascii=False), mimetype='application/json',
+                    headers={'Content-Disposition': f'attachment; filename=brieflyai-backup-{stamp}.json',
+                             'Cache-Control': 'no-store'})
+
+
 @app.route('/robots.txt')
 def robots_txt():
     lines = [
@@ -2575,6 +2911,8 @@ def robots_txt():
         "Disallow: /toggle_bookmark/",
         "Disallow: /add_comment/",
         "Disallow: /vote_comment/",
+        "Disallow: /admin/",
+        "Disallow: /healthz",
         "",
         f"Sitemap: {url_for('sitemap', _external=True)}",
     ]
@@ -2675,7 +3013,9 @@ def service_worker():
     scope covers the whole site.
     """
     sw = """
-const VERSION = 'brieflyai-v2';
+const VERSION = 'brieflyai-v3';
+// Only these hosts are cached. Ads, ad measurement and news images always go to the network.
+const CACHEABLE_HOSTS = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 const OFFLINE_URL = '/offline';
 const PRECACHE = [OFFLINE_URL, '/manifest.webmanifest'];
 
@@ -2700,12 +3040,13 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
 
   // Never cache authenticated or mutating endpoints.
-  if (/^\\/(login|logout|register|profile|add_comment|vote_comment|delete_comment|edit_comment|toggle_bookmark|post_article|report_article)/.test(url.pathname)) {
+  if (/^\\/(admin|healthz|ads\\.txt|login|logout|register|profile|add_comment|vote_comment|delete_comment|edit_comment|toggle_bookmark|post_article|report_article)/.test(url.pathname)) {
     return;
   }
 
   // Static assets from our allowed CDNs: cache-first, they are versioned URLs.
   if (url.origin !== self.location.origin) {
+    if (!CACHEABLE_HOSTS.includes(url.hostname)) return;
     event.respondWith(
       caches.match(req).then((hit) => hit || fetch(req).then((res) => {
         if (res && res.status === 200) {
@@ -3067,71 +3408,6 @@ def fetch_news_from_rss(limit_per_feed=25):
     return articles
 
 
-def prune_old_data(article_days=None, analysis_days=None, stat_days=None):
-    """
-    Delete rows the app no longer needs, to keep a small database within its quota.
-
-    Community articles and their comments are user-generated and are NEVER deleted here;
-    only derived/cached rows are pruned.
-    """
-    article_days = article_days or int(os.environ.get('RETAIN_ANALYSIS_DAYS', '45'))
-    analysis_days = analysis_days or article_days
-    stat_days = stat_days or int(os.environ.get('RETAIN_STATS_DAYS', '90'))
-    removed = {}
-    try:
-        analysis_cutoff = datetime.now(timezone.utc) - timedelta(days=analysis_days)
-        removed['analysis'] = (ArticleAnalysis.query
-                               .filter(ArticleAnalysis.created_at < analysis_cutoff)
-                               .delete(synchronize_session=False))
-        stat_cutoff = datetime.now(timezone.utc) - timedelta(days=stat_days)
-        removed['stats'] = (ArticleStat.query
-                            .filter(ArticleStat.last_viewed_at < stat_cutoff)
-                            .delete(synchronize_session=False))
-        # Bookmarks pointing at API articles that aged out are already shown as
-        # "stale" in the UI; they are tiny, so they are kept deliberately.
-        db.session.commit()
-        app.logger.info(f"Pruned old rows: {removed}")
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Pruning failed: {e}", exc_info=True)
-        removed['error'] = str(e)
-    return removed
-
-
-@app.route('/admin/maintenance', methods=['POST'])
-@login_required
-@rate_limit(6, 3600, scope='maintenance')
-def run_maintenance():
-    """Manual prune, so a small database can be kept under quota without shell access."""
-    if not session.get('is_admin') or session.get('username') != ADMIN_USERNAME:
-        abort(403)
-    result = prune_old_data()
-    return jsonify({"success": 'error' not in result, "removed": result})
-
-
-@app.route('/admin/storage')
-@login_required
-def storage_report():
-    """Row counts per table, so you can see what is actually consuming the quota."""
-    if not session.get('is_admin') or session.get('username') != ADMIN_USERNAME:
-        abort(403)
-    try:
-        report = {
-            "community_articles": CommunityArticle.query.count(),
-            "comments": Comment.query.count(),
-            "users": User.query.count(),
-            "bookmarks": BookmarkedArticle.query.count(),
-            "ai_analysis_rows": ArticleAnalysis.query.count(),
-            "article_stats": ArticleStat.query.count(),
-            "subscribers": Subscriber.query.count(),
-            "reports": ReportedArticle.query.count(),
-        }
-        return jsonify({"success": True, "counts": report})
-    except Exception as e:
-        app.logger.error(f"Storage report failed: {e}", exc_info=True)
-        return jsonify({"success": False, "error": "Could not build the report."}), 500
-
-
 @app.route('/healthz')
 def health_check():
     """Liveness/readiness probe for the host platform."""
@@ -3141,6 +3417,7 @@ def health_check():
         db.session.execute(db.text('SELECT 1'))
         status["database"] = "ok"
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Health check DB failure: {e}")
         status["status"] = "degraded"
         status["database"] = "error"
@@ -3151,7 +3428,8 @@ def health_check():
         "article_store": MASTER_ARTICLE_STORE.stats(),
         "api_cache": API_CACHE.stats(),
     }
-    return jsonify(status), code
+    # Also called by the keep alive job, which keeps a free hosted database from idling.
+    return jsonify(status), code, {'Cache-Control': 'no-store'}
 
 # ==============================================================================
 # --- 7. HTML Templates (Stored in memory) ---
@@ -3168,6 +3446,8 @@ BASE_HTML_TEMPLATE = """
     <link rel="manifest" href="{{ url_for('web_manifest') }}">
     <link rel="icon" href="{{ url_for('app_icon', size=192, v=2) }}" type="image/svg+xml">
     <link rel="alternate" type="application/rss+xml" title="BrieflyAI - Community Stories" href="{{ url_for('rss_feed') }}">
+    {% if adsense_client %}<meta name="google-adsense-account" content="{{ adsense_client }}">{% endif %}
+    {% if ads_on_page %}<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}" crossorigin="anonymous"></script>{% endif %}
     <title>{% block title %}BrieflyAI{% endblock %}</title>
 
     {# --- SEO / social sharing. Pages override the inner blocks. --- #}
@@ -3979,6 +4259,7 @@ BASE_HTML_TEMPLATE = """
         .static-content-container { border-radius: var(--border-radius-xl); box-shadow: none; }
         .static-content-container h2 { display: flex; align-items: center; gap: 12px; border-bottom: 0; padding-bottom: 0; font-size: 1.25rem; line-height: 1.75rem; }
         .static-content-container h2 .icon { margin-right: 0; color: var(--accent-color); }
+        .static-content-container > h2:first-child { margin-top: 0; }
         .static-content-container p.lead { font-size: 1.125rem; line-height: 1.75rem; color: var(--text-muted-color); max-width: 60ch; }
         .contact-card { border-radius: var(--border-radius-lg); }
         .contact-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); border-color: var(--card-border-color); }
@@ -4067,13 +4348,31 @@ BASE_HTML_TEMPLATE = """
         .recent-item:hover { border-color: var(--card-border-color); transform: translateY(-2px); }
         .recent-item__title { font-weight: 600; }
 
+        /* Ad spaces: labelled, on the page's own surface, and collapsed when Google has no ad. */
+        .ad-slot { margin: 32px 0; padding: 12px; border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); background: var(--card-bg); min-height: 132px; }
+        .ad-slot-label { display: block; margin-bottom: 8px; font-size: 0.75rem; line-height: 1rem; color: var(--text-subtle-color); }
+        .ad-slot:has(ins.adsbygoogle[data-ad-status="unfilled"]) { display: none; }
+
+        /* Admin storage page. */
+        .storage-meter { height: 8px; border-radius: var(--border-radius-pill); background: var(--surface-muted); overflow: hidden; margin: 12px 0 8px; }
+        .storage-meter span { display: block; height: 100%; background: var(--accent-color); border-radius: inherit; }
+        .storage-meter.is-high span { background: #DC2626; }
+        .storage-stats { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin: 24px 0; }
+        .storage-stat { padding: 16px; border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); background: var(--light-bg); }
+        .storage-stat dt { font-size: 0.75rem; line-height: 1rem; font-weight: 500; color: var(--text-subtle-color); }
+        .storage-stat dd { margin: 4px 0 0; font-size: 1rem; line-height: 1.5rem; font-weight: 500; }
+        .storage-table { width: 100%; font-size: 0.875rem; line-height: 1.25rem; }
+        .storage-table th { font-weight: 500; color: var(--text-subtle-color); }
+        .storage-table th, .storage-table td { padding: 8px 12px; border-bottom: 1px solid var(--card-border-color); }
+        .storage-table td.num, .storage-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
         /* ==========================================================================
            PRINT
            ========================================================================== */
         @media print {
             .navbar-main, .offcanvas, footer, .admin-controls, .article-toolbar, .reading-progress,
             #alert-placeholder, .comment-section, .recent-strip, .modal, .offcanvas-backdrop,
-            .bookmark-btn, .read-more, .pagination, .btn { display: none !important; }
+            .bookmark-btn, .read-more, .pagination, .btn, .ad-slot { display: none !important; }
             body { padding-top: 0; background: #fff; color: #000; font-size: 1rem; }
             .article-full-content-wrapper { box-shadow: none; border: none; padding: 0; max-width: 100%; }
             .summary-box, .takeaways-box { border: 1px solid #ccc; background: none !important; break-inside: avoid; }
@@ -4175,7 +4474,7 @@ BASE_HTML_TEMPLATE = """
                         <ul class="dropdown-menu shadow" aria-labelledby="offcanvasUserDropdown">
                             <li><a class="dropdown-item" href="{{ url_for('profile') }}"><i class="ph ph-identification-card me-2" aria-hidden="true"></i>Profile</a></li>
                             <li><a class="dropdown-item" href="{{ url_for('share_testimonial') }}"><i class="ph ph-chat-circle-text me-2" aria-hidden="true"></i>Share your experience</a></li>
-                            {% if session.get('is_admin') %}<li><a class="dropdown-item" href="{{ url_for('admin_testimonials') }}"><i class="ph ph-quotes me-2" aria-hidden="true"></i>Review testimonials</a></li>{% endif %}
+                            {% if session.get('is_admin') %}<li><a class="dropdown-item" href="{{ url_for('admin_testimonials') }}"><i class="ph ph-quotes me-2" aria-hidden="true"></i>Review testimonials</a></li><li><a class="dropdown-item" href="{{ url_for('admin_storage') }}"><i class="ph ph-database me-2" aria-hidden="true"></i>Storage</a></li>{% endif %}
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="{{ url_for('logout') }}"><i class="ph ph-sign-out me-2" aria-hidden="true"></i>Logout</a></li>
                         </ul>
@@ -4533,23 +4832,21 @@ BASE_HTML_TEMPLATE = """
         update();
     };
 
-    /* Third-party tags (ads, analytics) are deferred until the page is idle so they
-       never compete with content for bandwidth or main-thread time during load. */
+    /* Analytics is deferred until the page is idle so it never competes with content.
+       AdSense is not loaded here: it sits in <head> on reading pages only, where Google's
+       crawler can see it and where ads are allowed (never on sign in or error pages). */
     BrieflyAI.loadDeferredScripts = function () {
         if (BrieflyAI._deferredLoaded) { return; }
         BrieflyAI._deferredLoaded = true;
+        {% if ga_measurement_id %}
         window.dataLayer = window.dataLayer || [];
         window.gtag = function () { window.dataLayer.push(arguments); };
         window.gtag('js', new Date());
-        window.gtag('config', 'G-CV5LWJ7NQ7');
-        [
-            'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-6975904325280886',
-            'https://www.googletagmanager.com/gtag/js?id=G-CV5LWJ7NQ7'
-        ].forEach(function (src) {
-            var s = document.createElement('script');
-            s.src = src; s.async = true; s.crossOrigin = 'anonymous';
-            document.head.appendChild(s);
-        });
+        window.gtag('config', '{{ ga_measurement_id }}');
+        var s = document.createElement('script');
+        s.src = 'https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}'; s.async = true;
+        document.head.appendChild(s);
+        {% endif %}
     };
 
     /* --- Sharing ------------------------------------------------------------
@@ -5004,7 +5301,7 @@ INDEX_HTML_TEMPLATE = """
 
         {% if featured_article %}
         <article class="featured-story">
-            <div class="featured-story-image" style="background-image: url('{{ featured_article.urlToImage }}')" role="img" aria-label="{{ featured_article.title|truncate(80) }}"></div>
+            <div class="featured-story-image" {% if featured_article.urlToImage %}style="background-image: url('{{ featured_article.urlToImage }}')"{% endif %} role="img" aria-label="{{ featured_article.title|truncate(80) }}"></div>
             <div class="featured-story-content">
                 <div class="article-meta">
                     <span class="meta-item"><i class="ph ph-fire" aria-hidden="true"></i> Top story</span>
@@ -5016,6 +5313,8 @@ INDEX_HTML_TEMPLATE = """
             </div>
         </article>
         {% endif %}
+
+        {% with ad_name='feed', ad_slot=ad_slots.get('feed') %}{% include "_AD_SLOT_TEMPLATE" %}{% endwith %}
 
         <section class="recent-strip" id="trendingStrip" hidden aria-labelledby="trendingHeading">
             <div class="recent-strip__head">
@@ -5060,7 +5359,7 @@ INDEX_HTML_TEMPLATE = """
                                     <div class="article-body d-flex flex-column">
                                         <div class="d-flex justify-content-between align-items-start">
                                             <h3 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
-                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>{% endif %}
+                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ (art.urlToImage or '')|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>{% endif %}
                                         </div>
                                         <div class="article-meta small mb-2">
                                             <span class="meta-item text-muted"><i class="ph ph-buildings" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
@@ -5101,7 +5400,7 @@ INDEX_HTML_TEMPLATE = """
                                     <div class="article-body d-flex flex-column">
                                         <div class="d-flex justify-content-between align-items-start">
                                             <h3 class="article-title mb-2 flex-grow-1"><a href="{{ article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
-                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ art.urlToImage|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>{% endif %}
+                                            {% if session.user_id %}<button type="button" class="bookmark-btn homepage-bookmark-btn {% if art.is_bookmarked %}active{% endif %}" title="{% if art.is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if art.is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for {{ art.title|truncate(50) }}" data-article-hash-id="{{ art.id }}" data-is-community="false" data-title="{{ art.title|e }}" data-source-name="{{ art.source.name|e }}" data-image-url="{{ (art.urlToImage or '')|e }}" data-description="{{ (art.description if art.description else '')|e }}" data-published-at="{{ (art.publishedAt if art.publishedAt else '')|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>{% endif %}
                                         </div>
                                         <div class="article-meta small mb-2">
                                             <span class="meta-item text-muted"><i class="ph ph-buildings" aria-hidden="true"></i> {{ art.source.name|truncate(20) }}</span>
@@ -5189,7 +5488,7 @@ INDEX_HTML_TEMPLATE = """
                                     data-is-community="{{ 'true' if art.is_community_article else 'false' }}"
                                     data-title="{{ art.title|e }}"
                                     data-source-name="{{ (art.author.name if art.is_community_article and art.author else art.source.name)|e }}"
-                                    data-image-url="{{ (art.image_url if art.is_community_article else art.urlToImage)|e }}"
+                                    data-image-url="{{ ((art.image_url if art.is_community_article else art.urlToImage) or '')|e }}"
                                     data-description="{{ (art.description if art.description else '')|e }}"
                                     data-published-at="{{ (art.published_at.isoformat() if art.is_community_article and art.published_at else (art.publishedAt if not art.is_community_article and art.publishedAt else ''))|e }}">
                                 <i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i>
@@ -5224,6 +5523,8 @@ INDEX_HTML_TEMPLATE = """
         </div>
         {% endif %}
     {% endif %}
+
+    {% with ad_name='list', ad_slot=ad_slots.get('list') %}{% include "_AD_SLOT_TEMPLATE" %}{% endwith %}
 
     {% if total_pages and total_pages > 1 %}
     <nav aria-label="Page navigation" class="mt-5"><ul class="pagination justify-content-center">
@@ -5420,7 +5721,7 @@ ARTICLE_HTML_TEMPLATE = """
                 </button>
                 {% endif %}
 
-                <button type="button" id="bookmarkBtn" class="bookmark-btn {% if is_bookmarked %}active{% endif %}" title="{% if is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for this article" data-article-hash-id="{{ article.article_hash_id if is_community_article else article.id }}" data-is-community="{{ 'true' if is_community_article else 'false' }}" data-title="{{ article.title|e }}" data-source-name="{{ (article.author.name if is_community_article and article.author else article.source.name)|e }}" data-image-url="{{ (article.image_url if is_community_article else article.urlToImage)|e }}" data-description="{{ (article.description if article.description else '')|e }}" data-published-at="{{ (article.published_at.isoformat() if is_community_article and article.published_at else (article.publishedAt if not is_community_article and article.publishedAt else ''))|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>
+                <button type="button" id="bookmarkBtn" class="bookmark-btn {% if is_bookmarked %}active{% endif %}" title="{% if is_bookmarked %}Remove Bookmark{% else %}Add Bookmark{% endif %}" aria-label="{% if is_bookmarked %}Remove bookmark{% else %}Add bookmark{% endif %} for this article" data-article-hash-id="{{ article.article_hash_id if is_community_article else article.id }}" data-is-community="{{ 'true' if is_community_article else 'false' }}" data-title="{{ article.title|e }}" data-source-name="{{ (article.author.name if is_community_article and article.author else article.source.name)|e }}" data-image-url="{{ ((article.image_url if is_community_article else article.urlToImage) or '')|e }}" data-description="{{ (article.description if article.description else '')|e }}" data-published-at="{{ (article.published_at.isoformat() if is_community_article and article.published_at else (article.publishedAt if not is_community_article and article.publishedAt else ''))|e }}"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></button>
             {% endif %}
         </div>
     </div>
@@ -5491,6 +5792,8 @@ ARTICLE_HTML_TEMPLATE = """
         <hr class="my-4"><h2 class="content-divider-heading">Full article content</h2><div class="content-text">{{ article.full_text }}</div>
     {% else %}<div id="apiArticleContent"></div>{% endif %}
     </div>
+
+    {% with ad_name='article', ad_slot=ad_slots.get('article') %}{% include "_AD_SLOT_TEMPLATE" %}{% endwith %}
 
     <section class="comment-section mt-5" id="comment-section">
         <div class="comment-toolbar">
@@ -5783,7 +6086,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             if (analysis.groq_takeaways && analysis.groq_takeaways.length > 0) { html += `<div class="takeaways-box my-3"><h2><i class="ph ph-list-checks me-2" aria-hidden="true"></i>Key takeaways</h2><ul>${analysis.groq_takeaways.map(t => `<li>${String(t)}</li>`).join('')}</ul></div>`; }
                         }
                     }
-                    if (articleUrl) { html += `<hr class="my-4"><a href="${articleUrl}" class="btn btn-outline-primary mt-3 mb-3" target="_blank" rel="noopener noreferrer">Read Original Article at ${articleSourceName} <i class="ph ph-arrow-square-out ms-1" aria-hidden="true"></i></a>`; }
+                    if (articleUrl) { html += `<hr class="my-4"><a href="${articleUrl}" class="btn btn-outline-primary mt-3 mb-3" target="_blank" rel="noopener noreferrer">Read the original at ${articleSourceName} <i class="ph ph-arrow-square-out ms-1" aria-hidden="true"></i></a>`; }
                     apiArticleContent.innerHTML = html;
                     // Read time comes from whatever text we actually received.
                     BrieflyAI.setReadTime(data.full_text || (analysis && analysis.groq_summary) || '');
@@ -6555,12 +6858,79 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
         <h2><i class="icon ph ph-pencil-simple-line" aria-hidden="true"></i>5. Your choices</h2>
         <p>You can review and change your profile information by logging into your account. You may also request deletion of your account and associated data by contacting us.</p>
 
-        <h2><i class="icon ph ph-arrows-clockwise" aria-hidden="true"></i>6. Changes to this privacy policy</h2>
+        {% if adsense_client %}
+        <h2><i class="icon ph ph-cookie" aria-hidden="true"></i>6. Advertising and cookies</h2>
+        <p>BrieflyAI is free to read because it shows ads served by Google AdSense. Third party vendors, including Google, use cookies to serve ads based on your prior visits to BrieflyAI or other websites. Google's use of advertising cookies enables it and its partners to serve ads to you based on your visits to BrieflyAI and/or other sites on the internet.</p>
+        <p>You can opt out of personalised advertising in Google's <a href="https://adssettings.google.com/" target="_blank" rel="noopener noreferrer">Ads Settings</a>, or opt out of some third party vendors' use of cookies for personalised advertising at <a href="https://www.aboutads.info/choices/" target="_blank" rel="noopener noreferrer">www.aboutads.info</a>. To learn how Google uses information from sites that show its ads, see <a href="https://policies.google.com/technologies/partner-sites" target="_blank" rel="noopener noreferrer">How Google uses information from sites or apps that use our services</a>.</p>
+        <p>Where the law requires it, for example in the European Economic Area, the United Kingdom and Switzerland, you are asked for consent before personalised ads are shown. BrieflyAI's own cookies only keep you signed in, protect forms from forgery and remember your light or dark mode.</p>
+        {% endif %}
+        {% if ga_measurement_id %}
+        <p>We use Google Analytics to count visits and see which pages are read, which helps us improve the site. Google Analytics sets its own cookies and does not tell us who you are. You can block it with the <a href="https://tools.google.com/dlpage/gaoptout" target="_blank" rel="noopener noreferrer">Google Analytics opt out browser add on</a>.</p>
+        {% endif %}
+
+        <h2><i class="icon ph ph-arrows-clockwise" aria-hidden="true"></i>{% if adsense_client %}7{% else %}6{% endif %}. Changes to this privacy policy</h2>
         <p>We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page. You are advised to review this Privacy Policy periodically for any changes.</p>
     </div>
 </div>
 {% endblock %}
 """
+_AD_SLOT_TEMPLATE = """{% if ads_on_page and ad_slot %}
+<aside class="ad-slot ad-slot-{{ ad_name }}" aria-label="Advertisement">
+    <span class="ad-slot-label">Advertisement</span>
+    <ins class="adsbygoogle" style="display:block" data-ad-client="{{ adsense_client }}" data-ad-slot="{{ ad_slot }}" data-ad-format="auto" data-full-width-responsive="true"></ins>
+    <script>(window.adsbygoogle = window.adsbygoogle || []).push({});</script>
+</aside>
+{% endif %}"""
+
+ADMIN_STORAGE_HTML_TEMPLATE = """
+{% extends "BASE_HTML_TEMPLATE" %}
+{% block title %}Storage - BrieflyAI{% endblock %}
+{% block content %}
+<div class="animate-fade-in">
+    <div class="page-header-static">
+        <h1>Storage</h1>
+        <p class="text-muted mb-0 mt-3">Where BrieflyAI keeps its data, how full it is, and what is cleaned up automatically.</p>
+    </div>
+    <div class="static-content-container">
+        {% set mb = (report.size_bytes / 1048576) if report.size_bytes else None %}
+        <h2><i class="icon ph ph-database" aria-hidden="true"></i>{{ report.provider }}</h2>
+        {% if mb is not none %}
+        <p class="mb-0">{{ '%.1f'|format(mb) }} MB used{% if report.limit_mb %} of {{ report.limit_mb }} MB{% endif %}{% if report.percent is defined %} ({{ report.percent }}%){% endif %}.</p>
+        {% if report.percent is defined %}<div class="storage-meter {% if report.percent >= 80 %}is-high{% endif %}" role="img" aria-label="{{ report.percent }}% used"><span style="width: {{ report.percent }}%"></span></div>{% endif %}
+        {% endif %}
+
+        <dl class="storage-stats">
+            <div class="storage-stat"><dt>Copy from the old database</dt><dd>{% if report.data_copy %}{{ report.data_copy.status|capitalize }}{% if report.data_copy.rows %}, {{ report.data_copy.rows.values()|sum }} rows{% endif %}{% else %}Not needed{% endif %}</dd></div>
+            <div class="storage-stat"><dt>Last clean up</dt><dd>{% if report.cleanup %}{{ report.cleanup.at[:10] }}, {{ report.cleanup.summaries }} summaries and {{ report.cleanup.view_counts }} view counts removed{% else %}Not run yet{% endif %}</dd></div>
+            <div class="storage-stat"><dt>Kept for</dt><dd>Summaries {{ report.retention.summaries }} days, view counts {{ report.retention.view_counts }} days</dd></div>
+        </dl>
+
+        <h2><i class="icon ph ph-table" aria-hidden="true"></i>Tables</h2>
+        <div class="table-responsive">
+            <table class="storage-table">
+                <thead><tr><th scope="col">Table</th><th scope="col" class="num">Rows</th><th scope="col" class="num">Size</th></tr></thead>
+                <tbody>
+                {% for t in report.tables %}
+                    <tr><td>{{ t.name }}</td><td class="num">{{ '{:,}'.format(t.rows) }}</td><td class="num">{% if t.bytes is not none %}{{ '%.1f'|format(t.bytes / 1024) }} KB{% else %}&ndash;{% endif %}</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <h2><i class="icon ph ph-broom" aria-hidden="true"></i>Clean up and backup</h2>
+        <p>Summaries and view counts older than the periods above are removed once a day, unless a reader bookmarked or discussed the story. You can also run it now. Free databases have no automatic backups, so download a copy now and then. It contains account data, so keep it private.</p>
+        <div class="d-flex flex-wrap gap-2">
+            <form method="POST" action="{{ url_for('admin_storage_cleanup') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-primary"><i class="ph ph-broom me-2" aria-hidden="true"></i>Clean up now</button>
+            </form>
+            <a class="btn btn-outline-primary" href="{{ url_for('admin_storage_backup') }}"><i class="ph ph-download-simple me-2" aria-hidden="true"></i>Download backup</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+"""
+
 ERROR_404_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}404 Not Found - BrieflyAI{% endblock %}{% block content %}
 <div class="state-card state-card-narrow animate-fade-in">
     <div class="state-card-icon"><i class="ph ph-signpost" aria-hidden="true"></i></div>
@@ -6850,6 +7220,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     {% if theme == 'dark' %}<meta name="theme-color" content="#131209">{% elif theme == 'light' %}<meta name="theme-color" content="#F7F5EF">{% else %}<meta name="theme-color" content="#F7F5EF" media="(prefers-color-scheme: light)">
     <meta name="theme-color" content="#131209" media="(prefers-color-scheme: dark)">{% endif %}
     <link rel="manifest" href="{{ url_for('web_manifest') }}">
+    {% if adsense_client %}<meta name="google-adsense-account" content="{{ adsense_client }}">{% endif %}
+    {% if ads_on_page %}<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}" crossorigin="anonymous"></script>{% endif %}
     <link rel="icon" href="{{ url_for('app_icon', size=192, v=2) }}" type="image/svg+xml">
 
     <meta property="og:site_name" content="BrieflyAI">
@@ -7835,6 +8207,23 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         </div>
     </footer>
 
+    {% if ga_measurement_id %}
+    <script>
+    /* Analytics loads once the page is idle, the same way as on every other page. */
+    window.addEventListener('load', function () {
+        var go = function () {
+            window.dataLayer = window.dataLayer || [];
+            window.gtag = function () { window.dataLayer.push(arguments); };
+            window.gtag('js', new Date());
+            window.gtag('config', '{{ ga_measurement_id }}');
+            var s = document.createElement('script');
+            s.async = true; s.src = 'https://www.googletagmanager.com/gtag/js?id={{ ga_measurement_id }}';
+            document.head.appendChild(s);
+        };
+        if ('requestIdleCallback' in window) { requestIdleCallback(go, { timeout: 3000 }); } else { setTimeout(go, 1800); }
+    });
+    </script>
+    {% endif %}
     <script>
     (function () {
         var root = document.documentElement;
@@ -7970,6 +8359,8 @@ template_storage['LANDING_HTML_TEMPLATE'] = LANDING_HTML_TEMPLATE
 template_storage['TERMS_HTML_TEMPLATE'] = TERMS_HTML_TEMPLATE
 template_storage['SHARE_TESTIMONIAL_HTML_TEMPLATE'] = SHARE_TESTIMONIAL_HTML_TEMPLATE
 template_storage['ADMIN_TESTIMONIALS_HTML_TEMPLATE'] = ADMIN_TESTIMONIALS_HTML_TEMPLATE
+template_storage['ADMIN_STORAGE_HTML_TEMPLATE'] = ADMIN_STORAGE_HTML_TEMPLATE
+template_storage['_AD_SLOT_TEMPLATE'] = _AD_SLOT_TEMPLATE
 
 
 # ==============================================================================

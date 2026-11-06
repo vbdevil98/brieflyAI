@@ -18,3 +18,5 @@ jobs:
     steps:
       - name: Ping the website to keep it alive
         run: curl --fail -s "https://brieflyai.in/news" > /dev/null
+      - name: Touch the database so the free Supabase project is never paused
+        run: curl --fail -s "https://brieflyai.in/healthz" > /dev/null
