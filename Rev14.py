@@ -2630,14 +2630,14 @@ def web_manifest():
     manifest = {
         "name": "BrieflyAI",
         "short_name": "BrieflyAI",
-        "description": "AI-summarized, India-centric news.",
+        "description": "Short AI summaries and key takeaways for India's top stories.",
         "start_url": "/news",
         "scope": "/",
         "display": "standalone",
-        "background_color": "#F6F5F2",
-        "theme_color": "#0B0C10",
+        "background_color": "#F7F5EF",
+        "theme_color": "#F7F5EF",
         "icons": [{
-            "src": url_for('app_icon', size=size),
+            "src": url_for('app_icon', size=size, v=2),
             "sizes": f"{size}x{size}",
             "type": "image/svg+xml",
             "purpose": "any",
@@ -2652,8 +2652,10 @@ def app_icon(size):
     size = 512 if size not in (192, 512) else size
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="{size}" height="{size}">'
-        '<rect width="512" height="512" rx="96" fill="#0B0C10"/>'
-        '<path d="M286 60 154 292h84l-24 160 148-236h-88z" fill="#14B8A6"/>'
+        '<rect width="512" height="512" rx="112" fill="#16140F"/>'
+        '<rect x="128" y="136" width="256" height="48" rx="24" fill="#F7F5EF"/>'
+        '<rect x="128" y="232" width="176" height="48" rx="24" fill="#F7F5EF"/>'
+        '<rect x="128" y="328" width="96" height="48" rx="24" fill="#6CC9BD"/>'
         '</svg>'
     )
     return Response(svg, mimetype='image/svg+xml',
@@ -2673,7 +2675,7 @@ def service_worker():
     scope covers the whole site.
     """
     sw = """
-const VERSION = 'brieflyai-v1';
+const VERSION = 'brieflyai-v2';
 const OFFLINE_URL = '/offline';
 const PRECACHE = [OFFLINE_URL, '/manifest.webmanifest'];
 
@@ -3160,10 +3162,11 @@ BASE_HTML_TEMPLATE = """
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#0B0C10">
+    {% set _theme_pref = request.cookies.get('darkMode') %}
+    {% if _theme_pref == 'enabled' %}<meta name="theme-color" content="#131209">{% elif _theme_pref == 'disabled' %}<meta name="theme-color" content="#F7F5EF">{% else %}<meta name="theme-color" content="#F7F5EF" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#131209" media="(prefers-color-scheme: dark)">{% endif %}
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <link rel="manifest" href="{{ url_for('web_manifest') }}">
-    <link rel="icon" href="{{ url_for('app_icon', size=192) }}" type="image/svg+xml">
+    <link rel="icon" href="{{ url_for('app_icon', size=192, v=2) }}" type="image/svg+xml">
     <link rel="alternate" type="application/rss+xml" title="BrieflyAI - Community Stories" href="{{ url_for('rss_feed') }}">
     <title>{% block title %}BrieflyAI{% endblock %}</title>
 
@@ -3186,9 +3189,9 @@ BASE_HTML_TEMPLATE = """
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 
-    {# One typeface for the whole site (Geist), upright only, display=swap so text paints immediately. #}
-    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap">
+    {# One typeface for the whole site (Geist 400, 500, 600, the same request as the landing page), upright only. #}
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap">
 
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 
@@ -3202,27 +3205,36 @@ BASE_HTML_TEMPLATE = """
            DESIGN TOKENS
            ========================================================================== */
         :root {
-            --primary-color: #4338CA; --primary-light: #6D5FF7; --primary-dark: #2D278A;
-            --secondary-color: #0D9488; --secondary-light: #14B8A6; --accent-color: #EA580C;
-            --text-color: #0B0C0F; --text-muted-color: #5B5F6A;
-            --light-bg: #F6F5F2; --card-bg: #FFFFFF; --card-border-color: #E4E2DB;
-            --footer-bg: #0A0A0D; --footer-text: #A9ACB6; --footer-link-hover: var(--secondary-light);
-            --primary-color-rgb: 67, 56, 202; --secondary-color-rgb: 13, 148, 136; --accent-color-rgb: 234, 88, 12; --text-muted-color-rgb: 91, 95, 106;
-            --card-bg-rgb: 255, 255, 255;
+            /* The landing page's palette: warm paper, ink, one teal accent. */
+            --primary-color: #12645E; --primary-light: #12645E; --primary-dark: #0D4C47;
+            --secondary-color: #12645E; --secondary-light: #12645E; --accent-color: #12645E;
+            --ink: #16140F; --ink-hover: #2E2B23; --on-ink: #F7F5EF;
+            --text-color: #16140F; --text-muted-color: #5A564C; --text-subtle-color: #777266;
+            --light-bg: #F7F5EF; --card-bg: #FBFAF6; --card-border-color: #DEDACF;
+            --surface-color: #EFECE4; --surface-muted: #E6E2D8;
+            --footer-bg: #F7F5EF; --footer-text: #5A564C; --footer-link-hover: #16140F;
+            --primary-color-rgb: 18, 100, 94; --secondary-color-rgb: 18, 100, 94; --accent-color-rgb: 18, 100, 94; --text-muted-color-rgb: 90, 86, 76;
+            --card-bg-rgb: 251, 250, 246;
             --bookmark-active-color: var(--accent-color);
+            --logo-gist: #6CC9BD;
 
-            --glass-bg: rgba(11, 12, 16, 0.72);
-            --glass-border: rgba(255, 255, 255, 0.10);
+            --glass-bg: rgba(247, 245, 239, 0.72);
+            --glass-border: #DEDACF;
             --glass-blur: 16px;
-            --surface-gradient: linear-gradient(160deg, rgba(var(--primary-color-rgb), 0.05), rgba(var(--secondary-color-rgb), 0.03));
+            --panel-bg: rgba(247, 245, 239, 0.94);
+            --surface-gradient: none;
+            --photo-filter: none;
+            --photo-blend: #FFFFFF;
+            --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0 0.04 0 0 0 0.9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 
-            --shadow-sm: 0 1px 2px 0 rgb(10 10 12 / 0.05);
-            --shadow-md: 0 4px 14px -3px rgb(10 10 12 / 0.10), 0 2px 5px -2px rgb(10 10 12 / 0.05);
-            --shadow-lg: 0 18px 38px -10px rgb(10 10 12 / 0.18), 0 8px 14px -6px rgb(10 10 12 / 0.08);
-            --shadow-glow: 0 8px 24px -6px rgba(var(--primary-color-rgb), 0.45);
+            --shadow-sm: 0 1px 2px 0 rgba(56, 44, 20, 0.06);
+            --shadow-md: 0 16px 32px -24px rgba(56, 44, 20, 0.35);
+            --shadow-lg: 0 32px 64px -32px rgba(56, 44, 20, 0.35);
+            --shadow-glow: none;
 
-            --border-radius-xs: 0.375rem; --border-radius-sm: 0.55rem; --border-radius-md: 0.85rem;
-            --border-radius-lg: 1.15rem; --border-radius-pill: 999px;
+            /* Tailwind radii: md 6, lg 8, xl 12, 2xl 16, 3xl 24. */
+            --border-radius-xs: 6px; --border-radius-sm: 8px; --border-radius-md: 12px;
+            --border-radius-lg: 16px; --border-radius-xl: 24px; --border-radius-pill: 9999px;
 
             --font-display: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
             --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -3236,12 +3248,13 @@ BASE_HTML_TEMPLATE = """
 
             --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem; --space-4: 1rem; --space-5: 1.5rem; --space-6: 2rem; --space-7: 3rem;
 
-            --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
-            --ease-premium: cubic-bezier(0.16, 1, 0.3, 1);
-            --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
-            --duration-fast: 150ms; --duration-base: 240ms; --duration-slow: 420ms;
+            /* One motion curve everywhere, as on the landing page. */
+            --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+            --ease-premium: cubic-bezier(0.22, 1, 0.36, 1);
+            --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+            --duration-fast: 200ms; --duration-base: 300ms; --duration-slow: 500ms;
 
-            --skeleton-base: #ECEAE5; --skeleton-sheen: #F8F7F4;
+            --skeleton-base: #E6E2D8; --skeleton-sheen: #EFECE4;
         }
         @media (min-width: 992px) { :root { --text-3xl: 3rem; --text-4xl: 3.75rem; } }
         em, i, cite, blockquote, address { font-style: normal; }
@@ -3256,17 +3269,27 @@ BASE_HTML_TEMPLATE = """
         .testimonial-status-approved { color: var(--secondary-color); }
         .was-validated .form-control:invalid ~ .d-flex .d-block-when-invalid { display: block; }
         body.dark-mode {
-            --primary-color: #8B82FF; --primary-light: #ADA4FF; --primary-dark: #6D5FF7;
-            --secondary-color: #2DD4BF; --secondary-light: #5EEAD4; --accent-color: #FB923C;
-            --text-color: #F3F3F5; --text-muted-color: #9AA0AC;
-            --light-bg: #08080B; --card-bg: #131317; --card-border-color: #26262E;
-            --footer-bg: #000000; --footer-text: #9AA0AC;
-            --primary-color-rgb: 139, 130, 255; --secondary-color-rgb: 45, 212, 191; --accent-color-rgb: 251, 146, 60; --text-muted-color-rgb: 154, 160, 172;
-            --card-bg-rgb: 19, 19, 23;
-            --glass-bg: rgba(8, 8, 11, 0.72);
-            --glass-border: rgba(255, 255, 255, 0.08);
+            --primary-color: #6CC9BD; --primary-light: #6CC9BD; --primary-dark: #9ADBD2;
+            --secondary-color: #6CC9BD; --secondary-light: #6CC9BD; --accent-color: #6CC9BD;
+            --ink: #F2EFE6; --ink-hover: #DAD6CB; --on-ink: #131209;
+            --text-color: #F2EFE6; --text-muted-color: #ABA697; --text-subtle-color: #8C887B;
+            --light-bg: #131209; --card-bg: #181818; --card-border-color: #313131;
+            --surface-color: #1F1F1F; --surface-muted: #272727;
+            --footer-bg: #131209; --footer-text: #ABA697; --footer-link-hover: #F2EFE6;
+            --primary-color-rgb: 108, 201, 189; --secondary-color-rgb: 108, 201, 189; --accent-color-rgb: 108, 201, 189; --text-muted-color-rgb: 171, 166, 151;
+            --card-bg-rgb: 24, 24, 24;
+            --glass-bg: rgba(19, 18, 9, 0.66);
+            --glass-border: #313131;
+            --panel-bg: rgba(19, 18, 9, 0.92);
+            --photo-filter: brightness(0.5) saturate(0.85);
+            --photo-blend: #808080;
             --bookmark-active-color: var(--accent-color);
-            --skeleton-base: #1C1C22; --skeleton-sheen: #292930;
+            --logo-gist: #12645E;
+            --shadow-sm: none;
+            --shadow-md: 0 16px 32px -24px rgba(0, 0, 0, 0.8);
+            --shadow-lg: 0 32px 64px -32px rgba(0, 0, 0, 0.8);
+            --skeleton-base: #1F1F1F; --skeleton-sheen: #272727;
+            color-scheme: dark;
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -3293,7 +3316,7 @@ BASE_HTML_TEMPLATE = """
         html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; overflow-x: hidden; }
         ::selection { background: rgba(var(--primary-color-rgb), 0.22); }
         body {
-            padding-top: 84px; margin: 0; font-family: var(--font-sans); font-size: 1rem; line-height: 1.65;
+            padding-top: 96px; margin: 0; font-family: var(--font-sans); font-size: 1rem; line-height: 1.6;
             color: var(--text-color); background-color: var(--light-bg);
             display: flex; flex-direction: column; min-height: 100vh;
             transition: background-color 0.35s var(--ease-standard), color 0.35s var(--ease-standard);
@@ -3305,7 +3328,7 @@ BASE_HTML_TEMPLATE = """
         a:hover { color: var(--primary-dark); }
         img { max-width: 100%; }
 
-        h1, h2, h3, h4, h5 { font-family: var(--font-sans); font-weight: 700; letter-spacing: -0.022em; line-height: 1.22; }
+        h1, h2, h3, h4, h5 { font-family: var(--font-sans); font-weight: 600; letter-spacing: -0.022em; line-height: 1.22; }
 
         /* Editorial serif for the big moments only -- headlines, page titles, pull quotes. */
         .display-serif,
@@ -3322,8 +3345,8 @@ BASE_HTML_TEMPLATE = """
             line-height: 1.12;
         }
 
-        .eyebrow { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.13em; color: var(--primary-color); }
-        .section-heading { font-size: var(--text-2xl); font-weight: 700; margin: 0; letter-spacing: -0.025em; }
+        .eyebrow { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600; color: var(--primary-color); }
+        .section-heading { font-size: var(--text-2xl); font-weight: 600; margin: 0; letter-spacing: -0.025em; }
 
         ::-webkit-scrollbar { width: 10px; height: 10px; }
         ::-webkit-scrollbar-track { background: var(--light-bg); }
@@ -3357,7 +3380,7 @@ BASE_HTML_TEMPLATE = """
         .btn:active { transform: translateY(0) scale(0.975); }
         .btn-primary { --bs-btn-bg: var(--primary-color); --bs-btn-border-color: var(--primary-color); --bs-btn-hover-bg: var(--primary-dark); --bs-btn-hover-border-color: var(--primary-dark); --bs-btn-active-bg: var(--primary-dark); --bs-btn-active-border-color: var(--primary-dark); --bs-btn-focus-shadow-rgb: var(--primary-color-rgb); }
         .btn-primary:hover, .btn-primary:focus { box-shadow: var(--shadow-glow); }
-        .btn-primary-modal { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); border: none; color: #fff; border-radius: var(--border-radius-sm); font-weight: 600; padding: 0.65rem 1.5rem; transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring), filter var(--duration-base) var(--ease-standard); }
+        .btn-primary-modal { background-image: none; border: none; color: #fff; border-radius: var(--border-radius-sm); font-weight: 600; padding: 0.65rem 1.5rem; transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring), filter var(--duration-base) var(--ease-standard); }
         .btn-primary-modal:hover { color: #fff; filter: brightness(1.07); box-shadow: var(--shadow-glow); transform: translateY(-1px); }
         .btn-primary-modal:active { transform: translateY(0) scale(0.975); }
         .btn-outline-primary { --bs-btn-color: var(--primary-color); --bs-btn-border-color: var(--primary-color); --bs-btn-hover-bg: var(--primary-color); --bs-btn-hover-border-color: var(--primary-color); --bs-btn-active-bg: var(--primary-color); --bs-btn-active-border-color: var(--primary-color); }
@@ -3391,75 +3414,105 @@ BASE_HTML_TEMPLATE = """
         body.dark-mode #alert-placeholder .alert .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
 
         /* ==========================================================================
-           NAVBAR (glass)
+           NAVBAR: the landing page's floating frosted bar
            ========================================================================== */
         .navbar-main {
-            position: fixed; top: 0; width: 100%; z-index: 1040; padding: 0.75rem 0;
+            position: fixed; top: 16px; left: 0; right: 0; z-index: 1040;
+            width: calc(100% - 24px); margin-inline: auto; padding: 8px;
+            border: 1px solid var(--glass-border); border-radius: var(--border-radius-lg);
             background: var(--glass-bg);
-            -webkit-backdrop-filter: saturate(180%) blur(var(--glass-blur));
-            backdrop-filter: saturate(180%) blur(var(--glass-blur));
-            border-bottom: 1px solid var(--glass-border);
-            transition: padding var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), background-color var(--duration-base) var(--ease-standard);
+            -webkit-backdrop-filter: blur(16px) saturate(140%);
+            backdrop-filter: blur(16px) saturate(140%);
+            transition: box-shadow var(--duration-base) var(--ease-standard), background-color var(--duration-base) var(--ease-standard);
         }
         @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-            .navbar-main { background: #0B0C10; }
+            .navbar-main { background: var(--light-bg); }
         }
-        .navbar-main.is-scrolled { padding: 0.5rem 0; box-shadow: 0 6px 24px -10px rgba(0,0,0,0.55); }
-        .navbar-content-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; }
+        .navbar-main.is-scrolled { box-shadow: var(--shadow-md); }
+        /* The bar lines up with the page content at every Bootstrap container width. */
+        @media (min-width: 576px) { .navbar-main { max-width: 516px; } }
+        @media (min-width: 768px) { .navbar-main { max-width: 696px; } }
+        @media (min-width: 992px) { .navbar-main { max-width: 936px; } }
+        @media (min-width: 1200px) { .navbar-main { max-width: 1116px; } }
+        @media (min-width: 1400px) { .container { max-width: 1232px; } .navbar-main { max-width: 1208px; } }
+        .navbar-content-wrapper { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; }
         .navbar-left { flex-shrink: 0; }
-        .navbar-center { flex-grow: 1; min-width: 150px; max-width: 540px; }
+        .navbar-center { flex-grow: 1; min-width: 150px; max-width: 480px; }
         .navbar-right { flex-shrink: 0; }
-        .navbar-brand-custom { color: #fff !important; font-weight: 700; font-size: 1.25rem; font-family: var(--font-sans); display: flex; align-items: center; gap: 9px; text-decoration: none !important; letter-spacing: -0.035em; }
-        .navbar-brand-custom .brand-icon { color: var(--secondary-light); font-size: 1.125rem; transition: transform var(--duration-base) var(--ease-spring); }
-        .navbar-brand-custom:hover .brand-icon { transform: rotate(-12deg) scale(1.12); }
+        .navbar-brand-custom {
+            display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--border-radius-sm);
+            color: var(--text-color) !important; font-size: 1rem; line-height: 1.5rem; font-weight: 500; letter-spacing: -0.01em;
+            text-decoration: none !important; transition: background-color var(--duration-base) var(--ease-standard);
+        }
+        .navbar-brand-custom:hover { background: var(--surface-muted); }
 
         .search-container { position: relative; width: 100%; }
-        .navbar-search { width: 100%; border-radius: var(--border-radius-pill); padding: 0.58rem 2.6rem 0.58rem 2.75rem; border: 1px solid rgba(255,255,255,0.13); font-size: 0.875rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard); background: rgba(255,255,255,0.07); color: #fff; }
-        .navbar-search::placeholder { color: rgba(255,255,255,0.5); }
-        .navbar-search:focus { background: rgba(255,255,255,0.12); box-shadow: 0 0 0 3.5px rgba(var(--primary-color-rgb), 0.4); border-color: var(--primary-light); outline: none; color: #fff; }
-        .search-icon { color: rgba(255,255,255,0.55); transition: color var(--duration-base) var(--ease-standard); left: 1.05rem; position: absolute; top: 50%; transform: translateY(-50%); font-size: 0.75rem; pointer-events: none; }
-        .search-container:focus-within .search-icon { color: var(--primary-light); }
-        .search-clear-btn { position: absolute; right: 0.45rem; top: 50%; transform: translateY(-50%); background: none; border: none; color: rgba(255,255,255,0.5); width: 28px; height: 28px; border-radius: 50%; display: none; align-items: center; justify-content: center; font-size: 0.75rem; transition: color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }
-        .search-clear-btn:hover { color: #fff; background: rgba(255,255,255,0.14); }
+        .navbar-search {
+            width: 100%; height: 40px; padding: 8px 40px; border-radius: var(--border-radius-sm);
+            border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color);
+            font-size: 0.875rem; line-height: 1.25rem;
+            transition: border-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard);
+        }
+        .navbar-search::placeholder { color: var(--text-subtle-color); opacity: 1; }
+        .navbar-search:focus { background-color: var(--card-bg); border-color: var(--text-color); box-shadow: 0 0 0 3px rgba(var(--primary-color-rgb), 0.16); outline: none; color: var(--text-color); }
+        .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 1rem; color: var(--text-subtle-color); pointer-events: none; transition: color var(--duration-base) var(--ease-standard); }
+        .search-container:focus-within .search-icon { color: var(--text-color); }
+        .search-clear-btn {
+            position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px;
+            display: none; align-items: center; justify-content: center; border: none; border-radius: var(--border-radius-xs);
+            background: none; color: var(--text-muted-color); font-size: 0.875rem;
+            transition: color var(--duration-base) var(--ease-standard), background-color var(--duration-base) var(--ease-standard);
+        }
+        .search-clear-btn:hover { color: var(--text-color); background: var(--surface-muted); }
         .search-container.has-value .search-clear-btn { display: flex; }
 
-        .header-controls { display: flex; gap: 0.8rem; align-items: center; }
-        .header-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); padding: 0.5rem 1rem; border-radius: var(--border-radius-pill); color: #fff; font-weight: 600; transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); display: flex; align-items: center; gap: 0.5rem; cursor: pointer; text-decoration: none; font-size: 0.75rem; }
-        .header-btn:hover { background: var(--primary-color); border-color: var(--primary-color); color: #fff; transform: translateY(-1px); }
-        .header-btn:active { transform: scale(0.96); }
+        .header-controls { display: flex; gap: 4px; align-items: center; }
+        .header-btn {
+            display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 8px 12px;
+            border: 1px solid transparent; border-radius: var(--border-radius-sm); background: none; color: var(--text-color);
+            font-size: 0.875rem; line-height: 1.25rem; font-weight: 500;
+            transition: background-color var(--duration-base) var(--ease-standard), transform var(--duration-slow) var(--ease-standard);
+        }
+        .header-btn:hover { background: var(--surface-muted); }
+        .header-btn:active { transform: scale(0.98); }
+        .header-btn i { font-size: 1.125rem; }
 
         /* ==========================================================================
-           OFFCANVAS
+           OFFCANVAS: a paper panel, like the landing page's menu
            ========================================================================== */
-        .offcanvas { background-color: #101116; color: var(--footer-text); z-index: 1045; border-left: 1px solid rgba(255,255,255,0.08); width: min(360px, 88vw); }
-        body.dark-mode .offcanvas { background-color: #0B0B0F; }
-        .offcanvas-header { border-bottom-color: rgba(255,255,255,0.08) !important; padding: 1.25rem 1.5rem; }
-        .offcanvas-title { font-family: var(--font-sans); font-weight: 700; letter-spacing: -0.02em; }
-        .offcanvas-body { padding: 1.5rem; }
-        .offcanvas-header .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
-        .sidebar-section { margin-bottom: 1.5rem; }
-        .sidebar-heading { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--text-muted-color); margin-bottom: 0.75rem; font-weight: 700; }
-        .sidebar-btn { display: flex; align-items: center; padding: 0.75rem 1rem; width: 100%; text-align: left; background-color: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); color: #fff; text-decoration: none; border-radius: var(--border-radius-md); transition: background-color var(--duration-base) var(--ease-standard), border-color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
-        .sidebar-btn:hover { background-color: rgba(255,255,255,0.09); border-color: var(--primary-light); color: #fff; transform: translateX(2px); }
-        .sidebar-avatar { width: 40px; height: 40px; border-radius: 50%; background-image: linear-gradient(135deg, var(--primary-light), var(--secondary-color)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.125rem; flex-shrink: 0; }
-        .offcanvas .dropdown-toggle, .offcanvas .dropdown-toggle::after { color: #fff; }
-        .offcanvas .dropdown-menu { background-color: #1C1D25; border-color: #2E2F3A; border-radius: var(--border-radius-md); }
-        .offcanvas .dropdown-item { color: var(--footer-text); border-radius: var(--border-radius-sm); transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard); }
-        .offcanvas .dropdown-item:hover { background-color: var(--primary-color); color: #fff; }
-        .offcanvas .nav-link { padding: 0.65rem 1rem; font-weight: 600; border-radius: var(--border-radius-sm); transition: background-color var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); color: var(--footer-text) !important; }
-        .offcanvas .nav-link.active { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-dark)); color: #fff !important; box-shadow: var(--shadow-md); }
-        .offcanvas .nav-link:not(.active):hover { background-color: rgba(255,255,255,0.08); color: #fff !important; transform: translateX(3px); }
-        .offcanvas-search .navbar-search, .offcanvas-search .search-clear-btn { color: #fff; }
-        #dateFilterForm .form-control { background-color: #1C1D25; border-color: #2E2F3A; color: #fff; border-radius: var(--border-radius-sm); }
-        #dateFilterForm .form-control:focus { background-color: #1C1D25; border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(var(--primary-color-rgb),0.25); color: #fff; }
-        #dateFilterForm .btn-primary { border-radius: var(--border-radius-sm); }
+        .offcanvas { background-color: var(--light-bg); color: var(--text-color); z-index: 1045; border-left: 1px solid var(--card-border-color) !important; width: min(360px, 88vw); }
+        .offcanvas-header { border-bottom: 1px solid var(--card-border-color); padding: 16px 24px; }
+        .offcanvas-title { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 1rem; line-height: 1.5rem; font-weight: 500; }
+        .offcanvas-body { padding: 24px; }
+        body.dark-mode .offcanvas-header .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
+        .sidebar-section { margin-bottom: 24px; }
+        .sidebar-heading { margin-bottom: 8px; font-size: 0.75rem; line-height: 1rem; font-weight: 500; color: var(--text-subtle-color); }
+        .sidebar-btn {
+            display: flex; align-items: center; width: 100%; padding: 12px 16px; text-align: left;
+            border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md);
+            background-color: var(--card-bg); color: var(--text-color); text-decoration: none;
+            font-size: 0.875rem; line-height: 1.25rem; font-weight: 500;
+            transition: background-color var(--duration-base) var(--ease-standard);
+        }
+        .sidebar-btn:hover { background-color: var(--surface-muted); color: var(--text-color); }
+        .sidebar-avatar { width: 32px; height: 32px; border-radius: var(--border-radius-sm); background: var(--accent-color); color: var(--light-bg); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.875rem; flex-shrink: 0; }
+        .offcanvas .dropdown-toggle::after { margin-left: auto; color: var(--text-muted-color); }
+        .offcanvas .dropdown-menu { width: 100%; }
+        .offcanvas .nav-link {
+            display: flex; align-items: center; padding: 8px 12px; border-radius: var(--border-radius-sm);
+            color: var(--text-muted-color) !important; font-size: 0.875rem; line-height: 1.25rem; font-weight: 500;
+            transition: background-color var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard);
+        }
+        .offcanvas .nav-link.active { background: var(--surface-muted); color: var(--text-color) !important; }
+        .offcanvas .nav-link:not(.active):hover { background: var(--surface-muted); color: var(--text-color) !important; }
+        .offcanvas hr { border-color: var(--card-border-color); opacity: 1; }
 
         /* ==========================================================================
            TABS
            ========================================================================== */
         .nav-tabs { border-bottom: 1px solid var(--card-border-color); gap: 0.4rem; }
-        .nav-tabs .nav-link { border: none; background: transparent; color: var(--text-muted-color); font-weight: 700; font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; padding: 0.9rem 0.6rem; border-radius: 0; position: relative; transition: color var(--duration-base) var(--ease-standard); }
-        .nav-tabs .nav-link::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background-image: linear-gradient(90deg, var(--primary-color), var(--secondary-color)); transform: scaleX(0); transition: transform var(--duration-base) var(--ease-premium); }
+        .nav-tabs .nav-link { border: none; background: transparent; color: var(--text-muted-color); font-weight: 600; font-size: 0.75rem; padding: 0.9rem 0.6rem; border-radius: 0; position: relative; transition: color var(--duration-base) var(--ease-standard); }
+        .nav-tabs .nav-link::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background-image: none; transform: scaleX(0); transition: transform var(--duration-base) var(--ease-premium); }
         .nav-tabs .nav-link.active { color: var(--text-color); background: transparent; }
         .nav-tabs .nav-link.active::after { transform: scaleX(1); }
         .nav-tabs .nav-link:not(.active):hover { color: var(--text-color); }
@@ -3470,11 +3523,11 @@ BASE_HTML_TEMPLATE = """
            ========================================================================== */
         .article-card, .article-full-content-wrapper { background: var(--card-bg); border-radius: var(--border-radius-lg); border: 1px solid var(--card-border-color); box-shadow: var(--shadow-sm); transition: transform var(--duration-base) var(--ease-premium), box-shadow var(--duration-base) var(--ease-premium), border-color var(--duration-base) var(--ease-standard); }
         .article-card { position: relative; overflow: hidden; }
-        .article-card::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: var(--surface-gradient); opacity: 0; transition: opacity var(--duration-base) var(--ease-standard); pointer-events: none; }
+        .article-card::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: none; opacity: 0; transition: opacity var(--duration-base) var(--ease-standard); pointer-events: none; }
         .article-card:hover { transform: translateY(-6px); box-shadow: var(--shadow-lg); border-color: rgba(var(--primary-color-rgb), 0.35); }
         .article-card:hover::after { opacity: 1; }
 
-        .article-image-container { height: 200px; overflow: hidden; position: relative; border-top-left-radius: var(--border-radius-lg); border-top-right-radius: var(--border-radius-lg); background: var(--skeleton-base); background-image: linear-gradient(100deg, var(--skeleton-base) 30%, var(--skeleton-sheen) 50%, var(--skeleton-base) 70%); background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
+        .article-image-container { height: 200px; overflow: hidden; position: relative; border-top-left-radius: var(--border-radius-lg); border-top-right-radius: var(--border-radius-lg); background: var(--skeleton-base); background-image: none; background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
         .article-image-container.is-loaded, .article-image-container.img-fallback { animation: none; background-image: none; }
         .article-image-container.img-fallback { background: var(--light-bg); }
         .article-image { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: transform 0.6s var(--ease-premium), opacity var(--duration-slow) var(--ease-standard); }
@@ -3485,15 +3538,15 @@ BASE_HTML_TEMPLATE = """
         .img-fallback .img-fallback-icon { display: flex; }
 
         .article-body { padding: 1.35rem 1.4rem 1.4rem; flex-grow: 1; display: flex; flex-direction: column; position: relative; z-index: 1; }
-        .article-title { font-family: var(--font-sans); font-weight: 700; line-height: 1.27; margin-bottom: 0.55rem; font-size: var(--text-lg); letter-spacing: -0.025em; }
+        .article-title { font-family: var(--font-sans); font-weight: 600; line-height: 1.27; margin-bottom: 0.55rem; font-size: var(--text-lg); letter-spacing: -0.025em; }
         .article-title a { color: var(--text-color); text-decoration: none; transition: color var(--duration-fast) var(--ease-standard); }
         .article-card:hover .article-title a { color: var(--primary-color) !important; }
         .article-meta { display: flex; align-items: center; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.35rem 0.45rem; }
-        .meta-item { display: flex; align-items: center; font-family: var(--font-sans); font-size: 0.75rem; color: var(--text-muted-color); background: var(--light-bg); border: 1px solid var(--card-border-color); padding: 0.22rem 0.6rem; border-radius: var(--border-radius-pill); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; }
+        .meta-item { display: flex; align-items: center; font-family: var(--font-sans); font-size: 0.75rem; color: var(--text-muted-color); background: var(--light-bg); border: 1px solid var(--card-border-color); padding: 0.22rem 0.6rem; border-radius: var(--border-radius-pill); font-weight: 600; }
         .meta-item i { font-size: 0.75rem; margin-right: 0.35rem; color: var(--secondary-color); }
         .article-description { color: var(--text-muted-color); margin-bottom: 1.15rem; font-size: 0.875rem; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
         .read-more { margin-top: auto; background: var(--text-color); color: var(--card-bg) !important; border: none; padding: 0.62rem 0; border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.75rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); width: 100%; text-align: center; text-decoration: none; display: inline-block; }
-        .read-more:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff !important; box-shadow: var(--shadow-glow); }
+        .read-more:hover { background-image: none; color: #fff !important; box-shadow: var(--shadow-glow); }
         .read-more:active { transform: scale(0.98); }
 
         /* Long card grids below the fold: let the browser skip offscreen layout work. */
@@ -3503,31 +3556,44 @@ BASE_HTML_TEMPLATE = """
            PAGINATION
            ========================================================================== */
         .pagination { flex-wrap: wrap; }
-        .page-item .page-link { border-radius: var(--border-radius-sm); width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; color: var(--text-muted-color); background-color: var(--card-bg); border: 1px solid var(--card-border-color); font-weight: 700; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); font-size: 0.75rem; margin: 0 0.2rem; }
+        .page-item .page-link { border-radius: var(--border-radius-sm); width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; color: var(--text-muted-color); background-color: var(--card-bg); border: 1px solid var(--card-border-color); font-weight: 600; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); font-size: 0.75rem; margin: 0 0.2rem; }
         .page-item .page-link:hover { border-color: var(--primary-color); color: var(--primary-color); transform: translateY(-2px); }
-        .page-item.active .page-link { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); border-color: transparent; color: #fff; }
+        .page-item.active .page-link { background-image: none; border-color: transparent; color: #fff; }
         .page-item.disabled .page-link { color: var(--text-muted-color); pointer-events: none; background-color: var(--light-bg); opacity: 0.55; }
         .page-link-prev-next .page-link { width: auto; padding-left: 1.1rem; padding-right: 1.1rem; }
 
         /* ==========================================================================
-           FOOTER
+           FOOTER: the landing page's last print with a frosted panel on its sky
            ========================================================================== */
-        footer { background: var(--footer-bg); color: var(--footer-text); margin-top: auto; padding: 3.5rem 0 1.5rem; font-size: 0.875rem; position: relative; }
-        footer::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(var(--secondary-color-rgb), 0.55), rgba(var(--primary-color-rgb), 0.55), transparent); }
-        .footer-content.row { display: flex; flex-wrap: wrap; }
-        .footer-section h5 { color: #fff; margin-bottom: 1.2rem; font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.13em; }
-        .footer-links { display: flex; flex-direction: column; gap: 0.8rem; }
-        .footer-links a { color: var(--footer-text); text-decoration: none; transition: color var(--duration-base) var(--ease-standard), padding-left var(--duration-base) var(--ease-premium); }
-        .footer-links a:hover { color: var(--footer-link-hover); padding-left: 6px; }
-        .social-links { display: flex; gap: 0.6rem; margin-top: 0.5rem; }
-        .social-links a { color: var(--footer-text); font-size: 1rem; transition: color var(--duration-base) var(--ease-standard), background-color var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-spring); width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: var(--border-radius-sm); background: rgba(255,255,255,0.06); }
-        .social-links a:hover { color: #fff; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); transform: translateY(-3px); }
-        .footer-newsletter-input { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.14); color: #fff; }
-        .footer-newsletter-input::placeholder { color: rgba(255,255,255,0.5); }
-        .footer-newsletter-input:focus { background: rgba(255,255,255,0.1); border-color: var(--primary-light); box-shadow: 0 0 0 3px rgba(var(--primary-color-rgb), 0.4); color: #fff; }
-        .copyright { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.4rem 1.25rem; text-align: center; padding-top: 2rem; margin-top: 2rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.75rem; color: var(--text-muted-color); width: 100%; }
-        .back-to-top-link { color: var(--footer-text); background: none; border: none; font-size: 0.75rem; display: inline-flex; align-items: center; gap: 0.35rem; transition: color var(--duration-base) var(--ease-standard); }
-        .back-to-top-link:hover { color: var(--secondary-light); }
+        .site-footer { position: relative; isolation: isolate; margin-top: auto; padding: 160px 0 24px; color: var(--text-color); }
+        .site-footer > .photo { position: absolute; inset: 0; z-index: -1; overflow: hidden; background: var(--surface-muted); }
+        .site-footer > .photo img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 0%; filter: var(--photo-filter); }
+        .site-footer > .photo::after { content: ""; position: absolute; inset: 0; background-image: var(--grain); opacity: 0.14; mix-blend-mode: multiply; pointer-events: none; }
+        .footer-panel {
+            padding: 32px 24px; border-radius: var(--border-radius-xl); border: 1px solid var(--card-border-color);
+            background: var(--panel-bg); color: var(--text-color);
+            -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+        }
+        @media (min-width: 768px) { .footer-panel { padding: 40px; } }
+        .footer-top { display: grid; gap: 32px; }
+        @media (min-width: 768px) { .footer-top { grid-template-columns: 2fr 1fr 1fr; } }
+        .footer-brand { display: inline-flex; align-items: center; gap: 8px; font-size: 1rem; line-height: 1.5rem; font-weight: 500; color: var(--text-color); text-decoration: none; }
+        .footer-brand:hover { color: var(--text-color); }
+        .footer-blurb { margin: 12px 0 0; max-width: 320px; font-size: 0.875rem; line-height: 1.25rem; color: var(--text-muted-color); }
+        .footer-newsletter { margin-top: 24px; max-width: 360px; }
+        .footer-label { display: block; margin-bottom: 8px; font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; color: var(--text-color); }
+        .footer-newsletter-input { background: var(--card-bg); }
+        .footer-col h2 { margin: 0 0 12px; font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; letter-spacing: 0; }
+        .footer-col ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 0.875rem; line-height: 1.25rem; }
+        .footer-col a { color: var(--text-muted-color); text-decoration: none; transition: color var(--duration-base) var(--ease-standard); }
+        .footer-col a:hover { color: var(--text-color); }
+        .footer-bottom {
+            margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--card-border-color);
+            display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
+            font-size: 0.75rem; line-height: 1rem; color: var(--text-subtle-color);
+        }
+        .back-to-top-link { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: none; background: none; color: var(--text-muted-color); font-size: 0.75rem; line-height: 1rem; transition: color var(--duration-base) var(--ease-standard); }
+        .back-to-top-link:hover { color: var(--text-color); }
 
         /* ==========================================================================
            MODALS
@@ -3535,18 +3601,18 @@ BASE_HTML_TEMPLATE = """
         .modal-content { border-radius: var(--border-radius-lg); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); box-shadow: var(--shadow-lg); }
         body.dark-mode .modal-header .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
         .admin-controls { position: fixed; bottom: 25px; right: 25px; z-index: 1030; }
-        .add-article-btn { width: 56px; height: 56px; border-radius: var(--border-radius-md); color: #fff; border: none; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; cursor: pointer; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); box-shadow: var(--shadow-lg); transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-spring), filter var(--duration-base) var(--ease-standard); }
+        .add-article-btn { width: 56px; height: 56px; border-radius: var(--border-radius-md); color: #fff; border: none; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; cursor: pointer; background-image: none; box-shadow: var(--shadow-lg); transition: box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-base) var(--ease-spring), filter var(--duration-base) var(--ease-standard); }
         .add-article-btn:hover { filter: brightness(1.08); transform: translateY(-4px) scale(1.04); box-shadow: var(--shadow-glow); }
         .add-article-btn:active { transform: translateY(-1px) scale(0.96); }
 
         /* ==========================================================================
            STATIC PAGES
            ========================================================================== */
-        .page-header-static { background-color: var(--card-bg); background-image: var(--surface-gradient); border-radius: var(--border-radius-lg); padding: clamp(2rem, 5vw, 3.25rem); margin-bottom: 2rem; text-align: center; border: 1px solid var(--card-border-color); position: relative; overflow: hidden; }
-        .page-header-static::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background-image: linear-gradient(90deg, var(--primary-color), var(--secondary-color)); }
+        .page-header-static { background-color: var(--card-bg); border-radius: var(--border-radius-lg); padding: clamp(2rem, 5vw, 3.25rem); margin-bottom: 2rem; text-align: center; border: 1px solid var(--card-border-color); position: relative; overflow: hidden; }
+        .page-header-static::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background-image: none; }
         .page-header-static h1 { color: var(--text-color); font-size: var(--text-4xl); margin: 0; }
         .static-content-container { background-color: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 5vw, 3rem); font-size: 1rem; line-height: 1.8; box-shadow: var(--shadow-sm); }
-        .static-content-container h2 { font-family: var(--font-sans); font-weight: 700; color: var(--text-color); border-bottom: 2px solid var(--secondary-color); padding-bottom: 0.5rem; margin-top: 2.5rem; margin-bottom: 1.5rem; display: inline-block; font-size: var(--text-xl); }
+        .static-content-container h2 { font-family: var(--font-sans); font-weight: 600; color: var(--text-color); border-bottom: 2px solid var(--secondary-color); padding-bottom: 0.5rem; margin-top: 2.5rem; margin-bottom: 1.5rem; display: inline-block; font-size: var(--text-xl); }
         .static-content-container h2 .icon { margin-right: 0.75rem; color: var(--primary-color); }
         .static-content-container p, .static-content-container li { max-width: 68ch; }
         .static-content-container p.lead { font-family: var(--font-display); font-weight: 400; font-size: 1.25rem; line-height: 1.4; color: var(--text-color); max-width: 40ch; }
@@ -3564,7 +3630,7 @@ BASE_HTML_TEMPLATE = """
            AUTH
            ========================================================================== */
         .auth-card { max-width: 440px; margin: 3rem auto; background: var(--card-bg); border-radius: var(--border-radius-lg); box-shadow: var(--shadow-lg); border: 1px solid var(--card-border-color); overflow: hidden; }
-        .auth-header { padding: 2.25rem 2rem 2rem; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-dark)); text-align: center; }
+        .auth-header { padding: 2.25rem 2rem 2rem; background-image: none; text-align: center; }
         .auth-header .icon { font-size: 1.875rem; color: #fff; width: 64px; height: 64px; margin: 0 auto; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.16); border-radius: 50%; }
         .auth-header h1 { font-size: var(--text-2xl); color: #fff; margin-top: 1rem; margin-bottom: 0; }
         .auth-body { padding: 2rem 2.25rem; }
@@ -3572,16 +3638,16 @@ BASE_HTML_TEMPLATE = """
         .input-group-icon .form-control { padding-left: 2.5rem; }
         .input-group-icon .input-icon { position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: var(--text-muted-color); transition: color var(--duration-base) var(--ease-standard); }
         .input-group-icon:focus-within .input-icon { color: var(--primary-color); }
-        .auth-body .btn { padding: 0.75rem; font-weight: 700; font-size: 1rem; }
+        .auth-body .btn { padding: 0.75rem; font-weight: 600; font-size: 1rem; }
         .auth-footer { padding: 1.25rem 2.25rem; text-align: center; border-top: 1px solid var(--card-border-color); background: var(--light-bg); }
 
         /* ==========================================================================
            PROFILE
            ========================================================================== */
         .profile-header-card { background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: 2rem; box-shadow: var(--shadow-sm); display: flex; flex-direction: column; align-items: center; text-align: center; position: relative; overflow: hidden; }
-        .profile-header-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 96px; background-image: linear-gradient(135deg, rgba(var(--primary-color-rgb), 0.16), rgba(var(--secondary-color-rgb), 0.10)); }
+        .profile-header-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 96px; background-image: none; }
         .profile-avatar-wrapper { position: relative; margin-bottom: 1rem; z-index: 1; }
-        .profile-avatar { width: 116px; height: 116px; border-radius: 50%; background-image: linear-gradient(150deg, var(--primary-light), var(--primary-dark)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 3rem; font-family: var(--font-sans); border: 5px solid var(--card-bg); box-shadow: var(--shadow-md); }
+        .profile-avatar { width: 116px; height: 116px; border-radius: 50%; background-image: none; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 3rem; font-family: var(--font-sans); border: 5px solid var(--card-bg); box-shadow: var(--shadow-md); }
         .profile-header-card h1 { margin-bottom: 0.25rem; font-size: var(--text-3xl); position: relative; z-index: 1; }
         .profile-header-card .username { color: var(--text-muted-color); font-weight: 600; margin-bottom: 1rem; }
         .profile-stats { display: flex; gap: 1.5rem; margin-top: 1.5rem; border-top: 1px solid var(--card-border-color); padding-top: 1.5rem; width: 100%; justify-content: center; }
@@ -3589,19 +3655,19 @@ BASE_HTML_TEMPLATE = """
         button.stat-item { cursor: pointer; }
         button.stat-item:hover { background-color: var(--light-bg); transform: translateY(-2px); }
         .stat-item .icon { font-size: 1.25rem; color: var(--secondary-color); margin-bottom: 0.5rem; }
-        .stat-item .count { font-size: 1.25rem; font-weight: 700; color: var(--text-color); letter-spacing: -0.03em; }
-        .stat-item .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; color: var(--text-muted-color); }
+        .stat-item .count { font-size: 1.25rem; font-weight: 600; color: var(--text-color); letter-spacing: -0.03em; }
+        .stat-item .label { font-size: 0.75rem; font-weight: 600; color: var(--text-muted-color); }
         .profile-tabs .nav-link { padding: 0.75rem 1rem; }
 
         /* ==========================================================================
            EMPTY / ERROR STATES
            ========================================================================== */
-        .state-card { background-color: var(--card-bg); background-image: var(--surface-gradient); border-radius: var(--border-radius-lg); text-align: center; padding: clamp(2.25rem, 6vw, 3.5rem) 2rem; border: 1px dashed var(--card-border-color); }
+        .state-card { background-color: var(--card-bg); border-radius: var(--border-radius-lg); text-align: center; padding: clamp(2.25rem, 6vw, 3.5rem) 2rem; border: 1px dashed var(--card-border-color); }
         .state-card.state-card-narrow { max-width: 600px; margin-left: auto; margin-right: auto; }
         .state-card.state-card-solid { border-style: solid; box-shadow: var(--shadow-sm); }
-        .state-card-icon { width: 72px; height: 72px; border-radius: 50%; background-image: linear-gradient(140deg, rgba(var(--primary-color-rgb), 0.16), rgba(var(--secondary-color-rgb), 0.10)); color: var(--primary-color); display: inline-flex; align-items: center; justify-content: center; font-size: 1.5rem; margin-bottom: 1.25rem; }
+        .state-card-icon { width: 72px; height: 72px; border-radius: 50%; background-image: none; color: var(--primary-color); display: inline-flex; align-items: center; justify-content: center; font-size: 1.5rem; margin-bottom: 1.25rem; }
         .state-card-icon.state-card-icon-sm { width: 52px; height: 52px; font-size: 1rem; margin-bottom: 0.85rem; }
-        .state-card.state-card-danger .state-card-icon { background-image: linear-gradient(140deg, rgba(220, 38, 38, 0.18), rgba(220, 38, 38, 0.08)); color: #DC2626; }
+        .state-card.state-card-danger .state-card-icon { background-image: none; color: #DC2626; }
         .state-card-title { font-size: var(--text-2xl); margin-bottom: 0.5rem; }
         .state-card-text { color: var(--text-muted-color); max-width: 46ch; margin: 0 auto; }
         .state-card-actions { margin-top: 1.5rem; display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
@@ -3617,8 +3683,8 @@ BASE_HTML_TEMPLATE = """
         /* ==========================================================================
            AI SUMMARY / TAKEAWAYS / SKELETON
            ========================================================================== */
-        .summary-box, .takeaways-box { background-color: var(--card-bg); background-image: var(--surface-gradient); border: 1px solid rgba(var(--primary-color-rgb), 0.16); border-radius: var(--border-radius-md); margin: 1.6rem 0; padding: 1.5rem 1.65rem; }
-        .summary-box h2, .takeaways-box h2 { font-family: var(--font-sans); font-weight: 700; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.13em; color: var(--primary-color); margin-bottom: 0.75rem; }
+        .summary-box, .takeaways-box { background-color: var(--card-bg); border: 1px solid rgba(var(--primary-color-rgb), 0.16); border-radius: var(--border-radius-md); margin: 1.6rem 0; padding: 1.5rem 1.65rem; }
+        .summary-box h2, .takeaways-box h2 { font-family: var(--font-sans); font-weight: 600; font-size: 0.75rem; color: var(--primary-color); margin-bottom: 0.75rem; }
         .summary-box p { font-size: 1rem; line-height: 1.6; max-width: 62ch; margin: 0; }
         .takeaways-box { border-left: 3px solid var(--secondary-color); }
         .takeaways-box h2 { color: var(--secondary-color); }
@@ -3635,11 +3701,11 @@ BASE_HTML_TEMPLATE = """
         .ai-skeleton-line { height: 0.82rem; border-radius: var(--border-radius-xs); margin-bottom: 0.6rem; }
         .ai-skeleton-line:last-child { margin-bottom: 0; }
         .ai-skeleton-line.w-100 { width: 100%; } .ai-skeleton-line.w-95 { width: 95%; } .ai-skeleton-line.w-90 { width: 90%; } .ai-skeleton-line.w-80 { width: 80%; } .ai-skeleton-line.w-70 { width: 70%; }
-        .ai-skeleton-label, .ai-skeleton-line { background: linear-gradient(100deg, var(--skeleton-base) 30%, var(--skeleton-sheen) 50%, var(--skeleton-base) 70%); background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
+        .ai-skeleton-label, .ai-skeleton-line { background: none; background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
         .ai-skeleton-caption { color: var(--text-muted-color); font-size: var(--text-sm); text-align: center; margin: 0.25rem 0 0; }
         .ai-skeleton-caption i { color: var(--primary-color); }
 
-        .hero-image-wrap { position: relative; overflow: hidden; border-radius: var(--border-radius-md); box-shadow: var(--shadow-md); margin: 1.25rem 0; aspect-ratio: 16 / 8; max-height: 460px; background: var(--skeleton-base); background-image: linear-gradient(100deg, var(--skeleton-base) 30%, var(--skeleton-sheen) 50%, var(--skeleton-base) 70%); background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
+        .hero-image-wrap { position: relative; overflow: hidden; border-radius: var(--border-radius-md); box-shadow: var(--shadow-md); margin: 1.25rem 0; aspect-ratio: 16 / 8; max-height: 460px; background: var(--skeleton-base); background-image: none; background-size: 200% 100%; animation: skeletonShimmer 1.5s ease-in-out infinite; }
         .hero-image-wrap.is-loaded, .hero-image-wrap.img-fallback { animation: none; background-image: none; }
         .hero-image-wrap.img-fallback { background: var(--light-bg); }
         .hero-image-wrap .hero-image { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity var(--duration-slow) var(--ease-standard); }
@@ -3654,7 +3720,7 @@ BASE_HTML_TEMPLATE = """
            COMMENTS
            ========================================================================== */
         .comment-section h2 { padding-bottom: 0.75rem; border-bottom: 1px solid var(--card-border-color); font-size: var(--text-xl); }
-        .comment-form-heading { font-size: var(--text-lg); font-weight: 700; margin-bottom: 1rem; }
+        .comment-form-heading { font-size: var(--text-lg); font-weight: 600; margin-bottom: 1rem; }
         .comment-thread { position: relative; }
         #comments-list > .comment-thread + .comment-thread { margin-top: 1.75rem; padding-top: 1.75rem; border-top: 1px solid var(--card-border-color); }
         .comment-container { display: flex; gap: 1rem; align-items: flex-start; }
@@ -3662,11 +3728,11 @@ BASE_HTML_TEMPLATE = """
         .comment-replies.comment-replies-flat { margin-left: 1.5rem; padding-left: 1rem; }
         .comment-replies:empty { display: none; margin: 0; padding: 0; border: 0; }
         .comment-replies > .comment-thread + .comment-thread { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px dashed var(--card-border-color); }
-        .comment-avatar { width: 44px; height: 44px; border-radius: 50%; background-image: linear-gradient(140deg, var(--primary-light), var(--primary-dark)); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; flex-shrink: 0; box-shadow: var(--shadow-sm); }
+        .comment-avatar { width: 44px; height: 44px; border-radius: 50%; background-image: none; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; box-shadow: var(--shadow-sm); }
         .comment-replies .comment-avatar { width: 38px; height: 38px; font-size: 0.875rem; }
         .comment-body { flex-grow: 1; min-width: 0; }
         .comment-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.25rem; }
-        .comment-author { font-weight: 700; color: var(--text-color); }
+        .comment-author { font-weight: 600; color: var(--text-color); }
         .comment-date { font-size: 0.75rem; color: var(--text-muted-color); }
         .comment-content { word-wrap: break-word; }
         .comment-actions { position: relative; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; }
@@ -3680,14 +3746,14 @@ BASE_HTML_TEMPLATE = """
         .reaction-emoji.is-selected { background-color: rgba(var(--primary-color-rgb), 0.16); box-shadow: inset 0 0 0 1.5px rgba(var(--primary-color-rgb), 0.5); }
         .reaction-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
         .reaction-pill { display: flex; align-items: center; background-color: rgba(var(--primary-color-rgb), 0.08); border: 1px solid transparent; border-radius: var(--border-radius-pill); padding: 2px 9px; font-size: 0.75rem; font-weight: 600; cursor: default; transition: background-color var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard); }
-        .reaction-pill.user-reacted { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; }
+        .reaction-pill.user-reacted { background-image: none; color: #fff; border-color: transparent; }
         .reaction-pill .emoji { font-size: 0.875rem; margin-right: 4px; }
         .reply-form-container, .edit-form-container { padding: 1rem; border-radius: var(--border-radius-md); margin-top: 0.75rem; background-color: var(--light-bg); border: 1px solid var(--card-border-color); display: none; }
 
         /* ==========================================================================
            COMMUNITY HUB + LIST HEADERS
            ========================================================================== */
-        .community-hub-header { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; background-color: var(--card-bg); background-image: linear-gradient(135deg, rgba(var(--primary-color-rgb),0.09), rgba(var(--secondary-color-rgb),0.06)); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 2rem; }
+        .community-hub-header { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; background-color: var(--card-bg); background-image: none; border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 2rem; }
         .community-hub-header-text { max-width: 640px; }
         .community-hub-header h1 { font-family: var(--font-display); font-weight: 600; font-size: var(--text-3xl); margin: 0.4rem 0 0.6rem; }
         .community-hub-sub { color: var(--text-muted-color); margin: 0; max-width: 58ch; }
@@ -3701,32 +3767,32 @@ BASE_HTML_TEMPLATE = """
            ========================================================================== */
         .featured-story { display: flex; background-color: var(--card-bg); border-radius: var(--border-radius-lg); box-shadow: var(--shadow-lg); margin-bottom: 2rem; overflow: hidden; border: 1px solid var(--card-border-color); position: relative; }
         .featured-story-image { flex: 0 0 55%; background-size: cover; background-position: center; background-color: var(--skeleton-base); min-height: 440px; position: relative; will-change: transform; transform: translate3d(0, var(--parallax-y, 0px), 0) scale(1.08); transition: transform 80ms linear; }
-        .featured-story-image::after { content: ''; position: absolute; inset: 0; background: linear-gradient(100deg, rgba(0,0,0,0) 55%, rgba(var(--card-bg-rgb), 0.35) 100%); }
+        .featured-story-image::after { content: ''; position: absolute; inset: 0; background: none; }
         .featured-story-content { flex: 0 0 45%; padding: clamp(1.5rem, 4vw, 3rem); display: flex; flex-direction: column; justify-content: center; position: relative; }
-        .featured-story-content .meta-item:first-child { background-image: linear-gradient(135deg, rgba(var(--accent-color-rgb), 0.2), rgba(var(--accent-color-rgb), 0.1)); color: var(--accent-color); border-color: transparent; font-weight: 700; }
+        .featured-story-content .meta-item:first-child { background-image: none; color: var(--accent-color); border-color: transparent; font-weight: 600; }
         .featured-story-content .meta-item:first-child i { color: var(--accent-color); }
         .featured-story-content h2 { font-size: var(--text-3xl); margin: 1rem 0; }
         .featured-story-content h2 a { color: var(--text-color); text-decoration: none; transition: color var(--duration-base) var(--ease-standard); }
         .featured-story-content h2 a:hover { color: var(--primary-color); }
         .featured-story-content .description { font-size: 1rem; color: var(--text-muted-color); margin-bottom: 2rem; }
         .featured-story-content .read-more-btn { background: var(--text-color); color: var(--card-bg); padding: 0.8rem 1.6rem; text-decoration: none; border-radius: var(--border-radius-sm); font-weight: 600; font-size: 0.875rem; transition: background-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); align-self: flex-start; }
-        .featured-story-content .read-more-btn:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; box-shadow: var(--shadow-glow); transform: translateY(-2px); }
+        .featured-story-content .read-more-btn:hover { background-image: none; color: #fff; box-shadow: var(--shadow-glow); transform: translateY(-2px); }
 
-        .ai-synthesis-card { background-color: var(--card-bg); background-image: var(--surface-gradient); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 2rem; box-shadow: var(--shadow-sm); position: relative; overflow: hidden; }
-        .ai-synthesis-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background-image: linear-gradient(180deg, var(--primary-color), var(--secondary-color)); }
+        .ai-synthesis-card { background-color: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 2rem; box-shadow: var(--shadow-sm); position: relative; overflow: hidden; }
+        .ai-synthesis-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background-image: none; }
         .synthesis-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.1rem; }
-        .synthesis-header i { font-size: 0.875rem; color: #fff; background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--border-radius-sm); flex-shrink: 0; }
-        .synthesis-header h2 { font-size: 0.75rem; margin: 0; font-weight: 700; text-transform: uppercase; letter-spacing: 0.13em; color: var(--text-muted-color); }
+        .synthesis-header i { font-size: 0.875rem; color: #fff; background-image: none; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--border-radius-sm); flex-shrink: 0; }
+        .synthesis-header h2 { font-size: 0.75rem; margin: 0; font-weight: 600; color: var(--text-muted-color); }
         .synthesis-text { font-size: 1.5rem; line-height: 1.35; text-align: left; color: var(--text-color); position: relative; max-width: 40ch; margin: 0; }
         .synthesis-keywords { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--card-border-color); text-align: left; position: relative; }
         .synthesis-keywords .keyword-tag { display: inline-block; background-color: var(--light-bg); border: 1px solid var(--card-border-color); color: var(--text-color); padding: 0.35rem 0.95rem; border-radius: var(--border-radius-pill); margin: 0.2rem 0.3rem 0.2rem 0; font-size: 0.75rem; font-weight: 600; text-decoration: none; transition: background-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); }
-        .synthesis-keywords .keyword-tag:hover { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; transform: translateY(-2px); }
+        .synthesis-keywords .keyword-tag:hover { background-image: none; color: #fff; border-color: transparent; transform: translateY(-2px); }
 
         /* ==========================================================================
            READING PROGRESS BAR
            ========================================================================== */
         .reading-progress { position: fixed; top: 0; left: 0; height: 3px; width: 100%; z-index: 1050; background: transparent; pointer-events: none; }
-        .reading-progress__fill { height: 100%; width: 0%; background-image: linear-gradient(90deg, var(--primary-light), var(--secondary-color)); transform-origin: left; transition: width 80ms linear; }
+        .reading-progress__fill { height: 100%; width: 0%; background-image: none; transform-origin: left; transition: width 80ms linear; }
 
         /* ==========================================================================
            ARTICLE TOOLBAR (read time, listen, text size, share)
@@ -3734,7 +3800,7 @@ BASE_HTML_TEMPLATE = """
         .article-toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.85rem 0; margin: 1.25rem 0; border-top: 1px solid var(--card-border-color); border-bottom: 1px solid var(--card-border-color); }
         .toolbar-btn { display: inline-flex; align-items: center; gap: 0.4rem; background: none; border: 1px solid var(--card-border-color); color: var(--text-muted-color); border-radius: var(--border-radius-pill); padding: 0.35rem 0.85rem; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-spring); white-space: nowrap; }
         .toolbar-btn:hover { color: var(--primary-color); border-color: var(--primary-color); transform: translateY(-1px); }
-        .toolbar-btn.is-active { background-image: linear-gradient(135deg, var(--primary-light), var(--primary-color)); color: #fff; border-color: transparent; }
+        .toolbar-btn.is-active { background-image: none; color: #fff; border-color: transparent; }
         .read-time-badge { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 600; color: var(--text-muted-color); margin-right: auto; }
         .read-time-badge i { color: var(--secondary-color); }
         .toolbar-spacer { margin-left: auto; }
@@ -3768,8 +3834,8 @@ BASE_HTML_TEMPLATE = """
         .recent-strip__list::-webkit-scrollbar { height: 6px; }
         .recent-item { flex: 0 0 clamp(200px, 44vw, 260px); scroll-snap-align: start; background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-md); padding: 0.85rem 1rem; text-decoration: none; color: var(--text-color); transition: transform var(--duration-base) var(--ease-premium), box-shadow var(--duration-base) var(--ease-premium), border-color var(--duration-base) var(--ease-standard); }
         .recent-item:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: rgba(var(--primary-color-rgb), 0.35); color: var(--text-color); }
-        .recent-item__title { font-size: 0.875rem; font-weight: 700; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 0.35rem; letter-spacing: -0.02em; }
-        .recent-item__source { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; color: var(--text-muted-color); }
+        .recent-item__title { font-size: 0.875rem; font-weight: 600; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin: 0 0 0.35rem; letter-spacing: -0.02em; }
+        .recent-item__source { font-size: 0.75rem; font-weight: 600; color: var(--text-muted-color); }
         .link-btn { background: none; border: none; color: var(--text-muted-color); font-size: 0.75rem; font-weight: 600; text-decoration: underline; text-underline-offset: 0.2em; padding: 0; }
         .link-btn:hover { color: var(--primary-color); }
 
@@ -3784,6 +3850,222 @@ BASE_HTML_TEMPLATE = """
         /* Comment sort control */
         .comment-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
         .sort-select { font-size: 0.75rem; font-weight: 600; padding: 0.35rem 2rem 0.35rem 0.75rem; border-radius: var(--border-radius-pill); border: 1px solid var(--card-border-color); background-color: var(--card-bg); color: var(--text-color); width: auto; }
+
+        /* ==========================================================================
+           ONE THEME: every component on the landing page's paper, ink and teal
+           ========================================================================== */
+        body {
+            --bs-body-color: var(--text-color); --bs-body-bg: var(--light-bg); --bs-border-color: var(--card-border-color);
+            --bs-secondary-color: var(--text-muted-color); --bs-secondary-color-rgb: var(--text-muted-color-rgb);
+            --bs-emphasis-color: var(--text-color); --bs-heading-color: var(--text-color);
+        }
+        b, strong { font-weight: 600; }
+        .fw-bold { font-weight: 600 !important; }
+        h1, h2, h3, h4, h5, h6, .section-heading { text-wrap: balance; }
+        p, li, dd, figcaption { text-wrap: pretty; }
+        a { color: var(--accent-color); }
+        a:hover { color: var(--text-color); }
+        hr { border-color: var(--card-border-color); opacity: 1; }
+        ::selection { background: var(--text-color); color: var(--light-bg); }
+
+        /* Brand mark: ink tile, paper lines, the short teal line is the gist. */
+        .logo-mark { display: block; width: 24px; height: 24px; flex: none; }
+        .logo-tile { fill: var(--ink); }
+        .logo-line { fill: var(--light-bg); }
+        .logo-gist { fill: var(--logo-gist); }
+
+        /* Named text styles, identical to the landing page. */
+        .heading-1 { font-size: 3.75rem; line-height: 1; font-weight: 600; letter-spacing: -0.03em; }
+        .heading-2 { font-size: 3rem; line-height: 1; font-weight: 600; letter-spacing: -0.03em; }
+        .heading-3 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.025em; }
+        .heading-4 { font-size: 1.875rem; line-height: 2.25rem; font-weight: 600; letter-spacing: -0.02em; }
+        .heading-5 { font-size: 1.5rem; line-height: 2rem; font-weight: 600; letter-spacing: -0.015em; }
+        .heading-6 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 600; }
+        .title-1 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 500; letter-spacing: -0.01em; }
+        .title-2 { font-size: 1.125rem; line-height: 1.75rem; font-weight: 500; }
+        .title-3 { font-size: 1rem; line-height: 1.5rem; font-weight: 500; }
+        .title-4 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; }
+        .body-6 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 400; }
+        .caption-3 { font-size: 0.75rem; line-height: 1rem; font-weight: 600; letter-spacing: 0.04em; }
+        .caption-5 { font-size: 0.75rem; line-height: 1rem; font-weight: 400; }
+
+        .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; color: var(--accent-color); }
+        .eyebrow::before { content: ""; width: 24px; height: 1px; background: currentColor; }
+        .section-heading { font-weight: 600; letter-spacing: -0.015em; }
+
+        /* Photographs share one treatment: theme filter and film grain. */
+        .photo-credit {
+            position: absolute; top: 12px; right: 12px; z-index: 2; padding: 4px 8px; border-radius: var(--border-radius-xs);
+            background: var(--glass-bg); color: var(--text-muted-color); font-size: 0.75rem; line-height: 1rem;
+            -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+        }
+
+        /* Buttons: ink primary and paper ghost, exactly like the landing page. */
+        .btn { border-radius: var(--border-radius-sm); font-weight: 600; letter-spacing: 0; }
+        .btn:hover { transform: none; }
+        .btn:active { transform: scale(0.98); }
+        .btn-primary {
+            --bs-btn-color: var(--on-ink); --bs-btn-bg: var(--ink); --bs-btn-border-color: var(--ink);
+            --bs-btn-hover-color: var(--on-ink); --bs-btn-hover-bg: var(--ink-hover); --bs-btn-hover-border-color: var(--ink-hover);
+            --bs-btn-active-color: var(--on-ink); --bs-btn-active-bg: var(--ink-hover); --bs-btn-active-border-color: var(--ink-hover);
+            --bs-btn-disabled-color: var(--on-ink); --bs-btn-disabled-bg: var(--ink); --bs-btn-disabled-border-color: var(--ink);
+            --bs-btn-focus-shadow-rgb: var(--primary-color-rgb);
+        }
+        .btn-primary:hover, .btn-primary:focus { box-shadow: none; }
+        .btn-primary-modal { background: var(--ink); color: var(--on-ink); border-radius: var(--border-radius-sm); }
+        .btn-primary-modal:hover { background: var(--ink-hover); color: var(--on-ink); filter: none; box-shadow: none; transform: none; }
+        .btn-outline-primary {
+            --bs-btn-color: var(--text-color); --bs-btn-bg: var(--card-bg); --bs-btn-border-color: var(--card-border-color);
+            --bs-btn-hover-color: var(--text-color); --bs-btn-hover-bg: var(--surface-muted); --bs-btn-hover-border-color: var(--card-border-color);
+            --bs-btn-active-color: var(--text-color); --bs-btn-active-bg: var(--surface-muted); --bs-btn-active-border-color: var(--card-border-color);
+        }
+        .btn-outline-secondary {
+            --bs-btn-color: var(--text-muted-color); --bs-btn-border-color: var(--card-border-color);
+            --bs-btn-hover-color: var(--text-color); --bs-btn-hover-bg: var(--surface-muted); --bs-btn-hover-border-color: var(--card-border-color);
+            --bs-btn-active-color: var(--text-color); --bs-btn-active-bg: var(--surface-muted); --bs-btn-active-border-color: var(--card-border-color);
+        }
+        .form-control:focus, .form-select:focus { border-color: var(--text-color); }
+        .form-check-input:checked { background-color: #12645E; border-color: #12645E; }
+        .form-check-input:focus { border-color: var(--text-color); box-shadow: 0 0 0 3px rgba(var(--primary-color-rgb), 0.16); }
+        .dropdown-menu {
+            --bs-dropdown-bg: var(--card-bg); --bs-dropdown-color: var(--text-color); --bs-dropdown-border-color: var(--card-border-color);
+            --bs-dropdown-border-radius: var(--border-radius-md); --bs-dropdown-padding-x: 4px; --bs-dropdown-padding-y: 4px;
+            --bs-dropdown-link-color: var(--text-color); --bs-dropdown-link-hover-color: var(--text-color); --bs-dropdown-link-hover-bg: var(--surface-muted);
+            --bs-dropdown-link-active-color: var(--on-ink); --bs-dropdown-link-active-bg: var(--ink); --bs-dropdown-divider-bg: var(--card-border-color);
+            box-shadow: var(--shadow-lg) !important;
+        }
+        .dropdown-item { border-radius: var(--border-radius-sm); font-size: 0.875rem; line-height: 1.25rem; padding: 8px 12px; }
+        .table { --bs-table-bg: transparent; --bs-table-color: var(--text-color); --bs-table-border-color: var(--card-border-color); }
+        .badge.bg-secondary { background: var(--surface-muted) !important; color: var(--text-color); font-weight: 500; }
+        .modal-content { border-radius: var(--border-radius-xl); }
+        #alert-placeholder .alert { border-radius: var(--border-radius-md); }
+
+        /* Tabs: sentence case with an ink underline. */
+        .nav-tabs .nav-link { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; padding: 12px 8px; }
+        .nav-tabs .nav-link::after { background: var(--text-color); }
+
+        /* Story cards. */
+        .article-card, .article-full-content-wrapper { box-shadow: none; }
+        .article-card::after { content: none; }
+        .article-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); border-color: var(--card-border-color); }
+        .article-title { font-weight: 600; letter-spacing: -0.015em; }
+        .meta-item { border-radius: var(--border-radius-xs); background: transparent; padding: 2px 8px; line-height: 1rem; font-weight: 500; }
+        .meta-item i { color: var(--accent-color); }
+        /* One primary action per view: card links are ghost buttons that fill with ink on hover. */
+        .read-more { padding: 8px 12px; font-size: 0.875rem; line-height: 1.25rem; background: var(--card-bg); border: 1px solid var(--card-border-color); color: var(--text-color) !important; }
+        .read-more:hover, .article-card:hover .read-more { background: var(--ink); border-color: var(--ink); color: var(--on-ink) !important; box-shadow: none; }
+
+        /* Loading placeholders pulse flat instead of shimmering. */
+        @keyframes skeletonPulse { from { background-color: var(--skeleton-base); } to { background-color: var(--skeleton-sheen); } }
+        .article-image-container, .hero-image-wrap, .ai-skeleton-label, .ai-skeleton-line {
+            background-image: none; background-color: var(--skeleton-base);
+            animation: skeletonPulse 1200ms var(--ease-standard) infinite alternate;
+        }
+        .article-image-container.is-loaded, .article-image-container.img-fallback,
+        .hero-image-wrap.is-loaded, .hero-image-wrap.img-fallback { animation: none; background-color: var(--surface-color); }
+
+        .page-item .page-link { font-weight: 500; }
+        .page-item .page-link:hover { border-color: var(--text-color); color: var(--text-color); transform: none; }
+        .page-item.active .page-link { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
+
+        .add-article-btn { background: var(--ink); color: var(--on-ink); border-radius: var(--border-radius-lg); }
+        .add-article-btn:hover { background: var(--ink-hover); filter: none; transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+
+        /* Page titles read like the landing page's section titles. */
+        .page-header-static { background: none; border: 0; border-bottom: 1px solid var(--card-border-color); border-radius: 0; padding: 24px 0 32px; margin-bottom: 32px; text-align: left; overflow: visible; }
+        .page-header-static::before { content: none; }
+        .page-header-static h1 { font-size: 2.25rem; line-height: 2.5rem; font-weight: 600; letter-spacing: -0.025em; }
+        @media (min-width: 768px) { .page-header-static h1 { font-size: 3rem; line-height: 1; letter-spacing: -0.03em; } }
+        .static-content-container { border-radius: var(--border-radius-xl); box-shadow: none; }
+        .static-content-container h2 { display: flex; align-items: center; gap: 12px; border-bottom: 0; padding-bottom: 0; font-size: 1.25rem; line-height: 1.75rem; }
+        .static-content-container h2 .icon { margin-right: 0; color: var(--accent-color); }
+        .static-content-container p.lead { font-size: 1.125rem; line-height: 1.75rem; color: var(--text-muted-color); max-width: 60ch; }
+        .contact-card { border-radius: var(--border-radius-lg); }
+        .contact-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); border-color: var(--card-border-color); }
+        .contact-card .icon { color: var(--accent-color); }
+        .list-page-header h1, .community-hub-header h1 { font-weight: 600; letter-spacing: -0.025em; }
+        .community-hub-header { background: var(--card-bg); border-radius: var(--border-radius-xl); }
+
+        /* Sign in and sign up. */
+        .auth-card { border-radius: var(--border-radius-xl); box-shadow: var(--shadow-lg); }
+        .auth-header { background: none; padding: 40px 32px 8px; }
+        .auth-header .icon { width: 48px; height: 48px; border-radius: var(--border-radius-md); background: var(--surface-muted); color: var(--text-color); font-size: 1.5rem; }
+        .auth-header .icon.icon-logo { background: none; }
+        .auth-header .icon .logo-mark { width: 48px; height: 48px; }
+        .auth-header h1 { color: var(--text-color); font-size: 1.5rem; line-height: 2rem; }
+        .auth-footer { background: var(--surface-color); }
+
+        /* Profile. */
+        .profile-header-card { border-radius: var(--border-radius-xl); box-shadow: none; }
+        .profile-header-card::before { background: var(--surface-color); }
+        .profile-avatar { background: var(--accent-color); color: var(--light-bg); box-shadow: none; }
+        .stat-item .icon { color: var(--accent-color); }
+
+        /* Empty and error states. */
+        .state-card { border-radius: var(--border-radius-xl); }
+        .state-card-icon { background: var(--surface-muted); color: var(--text-color); border-radius: var(--border-radius-lg); }
+        .state-card.state-card-danger .state-card-icon { background: rgba(220, 38, 38, 0.12); color: #DC2626; }
+
+        .bookmark-btn:hover { color: var(--accent-color); }
+
+        /* Summary and takeaways, laid out like the story card on the landing page. */
+        .summary-box, .takeaways-box { background: var(--card-bg); border: 1px solid var(--card-border-color); border-radius: var(--border-radius-lg); padding: 24px; }
+        .summary-box h2, .takeaways-box h2 { display: flex; align-items: center; margin-bottom: 8px; font-size: 0.75rem; line-height: 1rem; font-weight: 600; letter-spacing: 0.04em; color: var(--text-subtle-color); }
+        .summary-box h2 i, .takeaways-box h2 i { color: var(--accent-color); }
+        .takeaways-box h2 { color: var(--text-subtle-color); }
+        .takeaways-box ul { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+        .takeaways-box li { position: relative; padding-left: 28px; margin: 0; }
+        .takeaways-box li::before {
+            content: ""; position: absolute; left: 0; top: 2px; width: 20px; height: 20px; background: var(--accent-color);
+            -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath d='M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath d='M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z'/%3E%3C/svg%3E") center / contain no-repeat;
+        }
+
+        /* Featured story and today's briefing. */
+        .featured-story { border-radius: var(--border-radius-xl); box-shadow: none; }
+        .featured-story-image::after { content: none; }
+        .featured-story-content .meta-item:first-child { background: var(--surface-muted); color: var(--text-color); border-color: transparent; font-weight: 500; }
+        .featured-story-content .meta-item:first-child i { color: var(--accent-color); }
+        .featured-story-content h2 { font-size: 1.875rem; line-height: 2.25rem; letter-spacing: -0.02em; }
+        .featured-story-content .read-more-btn { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; padding: 8px 12px; background: var(--ink); color: var(--on-ink); }
+        .featured-story-content .read-more-btn:hover { background: var(--ink-hover); color: var(--on-ink); box-shadow: none; transform: none; }
+
+        .ai-synthesis-card {
+            position: relative; isolation: isolate; overflow: hidden; padding: 160px 8px 8px;
+            border: 1px solid var(--card-border-color); border-radius: var(--border-radius-xl); box-shadow: none;
+            background-color: var(--photo-blend); background-blend-mode: multiply;
+            background-image: url("{{ url_for('static', filename='landing/darjeeling-1200.webp') }}");
+            background-image: image-set(url("{{ url_for('static', filename='landing/darjeeling-1200.webp') }}") 1x, url("{{ url_for('static', filename='landing/darjeeling-2400.webp') }}") 2x);
+            background-size: cover; background-position: 50% 40%;
+        }
+        .ai-synthesis-card::before { content: none; }
+        .ai-synthesis-card::after { content: ""; position: absolute; inset: 0; z-index: -1; background-image: var(--grain); opacity: 0.14; mix-blend-mode: multiply; pointer-events: none; }
+        .synthesis-panel {
+            padding: 24px; border-radius: var(--border-radius-lg); border: 1px solid var(--card-border-color);
+            background: var(--panel-bg); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+        }
+        @media (min-width: 768px) { .ai-synthesis-card { padding: 200px 8px 8px; } .synthesis-panel { padding: 32px; } }
+        .synthesis-header { margin-bottom: 16px; }
+        .synthesis-header h2 { font-size: 0.875rem; line-height: 1.25rem; font-weight: 500; color: var(--accent-color); }
+        .synthesis-text { font-size: 1.5rem; line-height: 2rem; font-weight: 600; letter-spacing: -0.015em; max-width: 52ch; }
+        @media (min-width: 992px) { .synthesis-text { font-size: 1.875rem; line-height: 2.25rem; letter-spacing: -0.02em; } }
+        .synthesis-keywords .keyword-tag { border-radius: var(--border-radius-xs); background: var(--surface-muted); border-color: transparent; padding: 4px 8px; font-weight: 500; }
+        .synthesis-keywords .keyword-tag:hover { background: var(--ink); color: var(--on-ink); transform: none; }
+
+        /* Comments. */
+        .comment-avatar { background: var(--surface-muted); color: var(--text-color); box-shadow: none; }
+        .comment-actions button { border-radius: var(--border-radius-xs); }
+        .reaction-pill.user-reacted { background: var(--ink); color: var(--on-ink); }
+
+        /* Article toolbar and reading progress. */
+        .reading-progress__fill { background: var(--accent-color); }
+        .toolbar-btn { border-radius: var(--border-radius-sm); font-weight: 500; }
+        .toolbar-btn:hover { color: var(--text-color); border-color: var(--text-color); transform: none; }
+        .toolbar-btn.is-active { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
+        .read-time-badge i { color: var(--accent-color); }
+
+        .recent-item { border-radius: var(--border-radius-lg); }
+        .recent-item:hover { border-color: var(--card-border-color); transform: translateY(-2px); }
+        .recent-item__title { font-weight: 600; }
 
         /* ==========================================================================
            PRINT
@@ -3813,15 +4095,9 @@ BASE_HTML_TEMPLATE = """
             .navbar-left { flex-grow: 1; }
             .featured-story-image { min-height: 220px; }
             .community-hub-cta, .community-hub-cta .btn { width: 100%; }
-            .footer-section { text-align: center; }
-            .footer-links { align-items: center; }
-            .social-links { justify-content: center; }
-            .footer-links a:hover { padding-left: 0; }
-            .copyright { flex-direction: column; gap: 0.5rem; }
         }
         @media (max-width: 575.98px) {
-            body { font-size: 0.875rem; padding-top: 76px; }
-            .navbar-brand-custom { font-size: 1.25rem; }
+            body { padding-top: 88px; }
             .comment-replies { margin-left: 1.25rem; padding-left: 1rem; }
             .comment-replies.comment-replies-flat { margin-left: 0.85rem; padding-left: 0.75rem; }
             .comment-container { gap: 0.75rem; }
@@ -3837,23 +4113,25 @@ BASE_HTML_TEMPLATE = """
     {% block head_extra %}{% endblock %}
 </head>
 <body class="{% if request.cookies.get('darkMode') == 'enabled' %}dark-mode{% endif %} {% block body_class %}{% endblock %}">
+    {# No saved choice yet: follow the device, before first paint, exactly like the landing page does. #}
+    <script>try { if (!/(^|; )darkMode=/.test(document.cookie) && window.matchMedia('(prefers-color-scheme: dark)').matches) { document.body.classList.add('dark-mode'); } } catch (e) {}</script>
 
     <a class="visually-hidden-focusable" href="#main-content">Skip to main content</a>
 
     <header>
-        <nav class="navbar-main" id="mainNavbar">
-            <div class="container">
+        <nav class="navbar-main" id="mainNavbar" aria-label="Main">
+            <div>
                 <div class="navbar-content-wrapper">
                     <div class="navbar-left">
-                        <a class="navbar-brand-custom" href="{{ url_for('index') }}">
-                            <i class="ph-fill ph-lightning brand-icon" aria-hidden="true"></i>
+                        <a class="navbar-brand-custom" href="{{ url_for('index') }}" aria-label="BrieflyAI, today's briefing">
+                            <svg class="logo-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg>
                             <span>BrieflyAI</span>
                         </a>
                     </div>
                     <div class="navbar-center">
                         <form action="{{ url_for('search_results') }}" method="GET" class="search-container" id="navbarSearchForm">
                             <label for="navbarSearchInput" class="visually-hidden">Search news articles</label>
-                            <input type="search" name="query" id="navbarSearchInput" class="form-control navbar-search" placeholder="Search news articles..." value="{{ request.args.get('query', '') }}" autocomplete="off">
+                            <input type="search" name="query" id="navbarSearchInput" class="form-control navbar-search" placeholder="Search the news" value="{{ request.args.get('query', '') }}" autocomplete="off">
                             <i class="ph ph-magnifying-glass search-icon" aria-hidden="true"></i>
                             <button type="button" class="search-clear-btn" aria-label="Clear search"><i class="ph ph-x" aria-hidden="true"></i></button>
                         </form>
@@ -3862,7 +4140,7 @@ BASE_HTML_TEMPLATE = """
                         <div class="header-controls">
                             <button class="header-btn" type="button" data-bs-toggle="offcanvas" data-bs-target="#mainOffcanvas" aria-controls="mainOffcanvas" aria-label="Open menu">
                                 <i class="ph ph-list" aria-hidden="true"></i>
-                                <span class="d-none d-sm-inline ms-1">Menu</span>
+                                <span class="d-none d-sm-inline">Menu</span>
                             </button>
                         </div>
                     </div>
@@ -3873,7 +4151,7 @@ BASE_HTML_TEMPLATE = """
 
     <div class="offcanvas offcanvas-end" tabindex="-1" id="mainOffcanvas" aria-labelledby="mainOffcanvasLabel">
         <div class="offcanvas-header">
-            <h2 class="offcanvas-title h5" id="mainOffcanvasLabel">BrieflyAI Menu</h2>
+            <h2 class="offcanvas-title" id="mainOffcanvasLabel"><svg class="logo-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg><span>Menu</span></h2>
             <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close menu"></button>
         </div>
         <div class="offcanvas-body d-flex flex-column">
@@ -3882,7 +4160,7 @@ BASE_HTML_TEMPLATE = """
                 <h6 class="sidebar-heading">Search</h6>
                 <form action="{{ url_for('search_results') }}" method="GET" class="search-container offcanvas-search">
                     <label for="offcanvasSearchInput" class="visually-hidden">Search news articles</label>
-                    <input type="search" name="query" id="offcanvasSearchInput" class="form-control navbar-search" placeholder="Search news articles..." value="{{ request.args.get('query', '') }}" autocomplete="off">
+                    <input type="search" name="query" id="offcanvasSearchInput" class="form-control navbar-search" placeholder="Search the news" value="{{ request.args.get('query', '') }}" autocomplete="off">
                     <i class="ph ph-magnifying-glass search-icon" aria-hidden="true"></i>
                 </form>
             </div>
@@ -3904,14 +4182,14 @@ BASE_HTML_TEMPLATE = """
                     </div>
                 {% else %}
                     <a href="{{ url_for('login') }}" class="sidebar-btn">
-                        <i class="ph ph-sign-in me-2" aria-hidden="true"></i> Login / Register
+                        <i class="ph ph-sign-in me-2" aria-hidden="true"></i> Sign in or create an account
                     </a>
                 {% endif %}
             </div>
 
             <div class="sidebar-section">
                  <button class="sidebar-btn dark-mode-toggle w-100" type="button" aria-pressed="false">
-                    <i class="ph ph-moon me-2" aria-hidden="true"></i> <span class="theme-text">Dark Mode</span>
+                    <i class="ph ph-moon me-2" aria-hidden="true"></i> <span class="theme-text">Dark mode</span>
                  </button>
             </div>
 
@@ -3938,7 +4216,7 @@ BASE_HTML_TEMPLATE = """
             <hr class="my-2">
 
             <div class="sidebar-section">
-                <h6 class="sidebar-heading">Filter by Date</h6>
+                <h6 class="sidebar-heading">Filter by date</h6>
                 <form id="dateFilterForm" class="mt-2">
                     <label for="articleDateFilter" class="visually-hidden">Filter articles by date</label>
                     <div class="input-group">
@@ -3946,7 +4224,7 @@ BASE_HTML_TEMPLATE = """
                         <button class="btn btn-primary" type="submit" title="Apply Date Filter">Go</button>
                     </div>
                      {% if current_filter_date %}
-                        <button class="btn btn-sm btn-outline-danger mt-2 w-100" type="button" id="clearDateFilter">Clear Date Filter</button>
+                        <button class="btn btn-sm btn-outline-danger mt-2 w-100" type="button" id="clearDateFilter">Clear date filter</button>
                     {% endif %}
                 </form>
             </div>
@@ -4023,7 +4301,7 @@ BASE_HTML_TEMPLATE = """
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4">
                 <div class="modal-header border-0 pb-0">
-                    <h2 class="modal-title h4" id="addArticleModalLabel">Post New Article</h2>
+                    <h2 class="modal-title h4" id="addArticleModalLabel">Post a new article</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -4033,12 +4311,12 @@ BASE_HTML_TEMPLATE = """
                     </p>
                     <form id="addArticleForm" action="{{ url_for('post_article') }}" method="POST">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <div class="mb-3"><label for="articleTitle" class="form-label">Article Title</label><input type="text" id="articleTitle" name="title" class="form-control" required></div>
-                        <div class="mb-3"><label for="articleDescription" class="form-label">Short Description</label><textarea id="articleDescription" name="description" class="form-control" rows="3" required></textarea></div>
-                        <div class="mb-3"><label for="articleSource" class="form-label">Source Name</label><input type="text" id="articleSource" name="sourceName" class="form-control" value="Community Post" required></div>
-                        <div class="mb-3"><label for="articleImage" class="form-label">Image URL (Optional)</label><input type="url" id="articleImage" name="imageUrl" class="form-control"></div>
-                        <div class="mb-3"><label for="articleContent" class="form-label">Full Article Content</label><textarea id="articleContent" name="content" class="form-control" rows="7" required></textarea></div>
-                        <div class="d-flex justify-content-end gap-2 mt-4"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary">Post Article</button></div>
+                        <div class="mb-3"><label for="articleTitle" class="form-label">Article title</label><input type="text" id="articleTitle" name="title" class="form-control" required></div>
+                        <div class="mb-3"><label for="articleDescription" class="form-label">Short description</label><textarea id="articleDescription" name="description" class="form-control" rows="3" required></textarea></div>
+                        <div class="mb-3"><label for="articleSource" class="form-label">Source name</label><input type="text" id="articleSource" name="sourceName" class="form-control" value="Community Post" required></div>
+                        <div class="mb-3"><label for="articleImage" class="form-label">Image URL (optional)</label><input type="url" id="articleImage" name="imageUrl" class="form-control"></div>
+                        <div class="mb-3"><label for="articleContent" class="form-label">Full article content</label><textarea id="articleContent" name="content" class="form-control" rows="7" required></textarea></div>
+                        <div class="d-flex justify-content-end gap-2 mt-4"><button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary">Post article</button></div>
                     </form>
                 </div>
             </div>
@@ -4046,54 +4324,51 @@ BASE_HTML_TEMPLATE = """
     </div>
     {% endif %}
 
-    <footer class="mt-auto">
+    <footer class="site-footer">
+        <div class="photo" aria-hidden="true">
+            <img src="{{ url_for('static', filename='landing/bombay-harbour-1200.webp') }}"
+                 srcset="{{ url_for('static', filename='landing/bombay-harbour-1200.webp') }} 1200w, {{ url_for('static', filename='landing/bombay-harbour-2400.webp') }} 2400w"
+                 sizes="100vw" width="2400" height="1241" loading="lazy" decoding="async" alt="">
+        </div>
         <div class="container">
-            <div class="footer-content row">
-                <div class="footer-section col-lg-4 col-md-6 mb-4">
-                    <div class="d-flex align-items-center mb-2">
-                        <i class="ph-fill ph-lightning me-2" style="color:var(--secondary-light); font-size: 1.25rem;" aria-hidden="true"></i>
-                        <span class="h5 mb-0" style="color:#fff; font-weight: 700; letter-spacing:-0.03em;">BrieflyAI</span>
+            <div class="footer-panel">
+                <div class="footer-top">
+                    <div>
+                        <a class="footer-brand" href="{{ url_for('landing') }}"><svg class="logo-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg><span>BrieflyAI</span></a>
+                        <p class="footer-blurb">Short AI summaries and key takeaways for India's top stories.</p>
+                        <form action="{{ url_for('subscribe') }}" method="POST" class="footer-newsletter">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <label for="footerNewsletterEmail" class="footer-label">Newsletter</label>
+                            <div class="input-group">
+                                <input type="email" id="footerNewsletterEmail" name="email" class="form-control footer-newsletter-input" placeholder="Your email" autocomplete="email" required>
+                                <button class="btn btn-primary" type="submit">Subscribe</button>
+                            </div>
+                        </form>
                     </div>
-                    <p class="small text-light">Your premier source for AI summarized, India-centric news.</p>
-                    <div class="social-links">
-                        <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="ph ph-x-logo" aria-hidden="true"></i></a><a href="#" title="Facebook" aria-label="BrieflyAI on Facebook"><i class="ph ph-facebook-logo" aria-hidden="true"></i></a><a href="#" title="LinkedIn" aria-label="BrieflyAI on LinkedIn"><i class="ph ph-linkedin-logo" aria-hidden="true"></i></a><a href="#" title="Instagram" aria-label="BrieflyAI on Instagram"><i class="ph ph-instagram-logo" aria-hidden="true"></i></a>
-                    </div>
+                    <nav class="footer-col" aria-label="Read">
+                        <h2>Read</h2>
+                        <ul>
+                            <li><a href="{{ url_for('index') }}">Today's briefing</a></li>
+                            {% for cat_item in categories %}{% if cat_item != 'All Articles' %}<li><a href="{{ url_for('index', category_name=cat_item, page=1) }}">{{ cat_item }}</a></li>{% endif %}{% endfor %}
+                            <li><a href="{{ url_for('rss_feed') }}">RSS feed</a></li>
+                        </ul>
+                    </nav>
+                    <nav class="footer-col" aria-label="BrieflyAI">
+                        <h2>BrieflyAI</h2>
+                        <ul>
+                            <li><a href="{{ url_for('landing') }}">Home</a></li>
+                            <li><a href="{{ url_for('about') }}">About</a></li>
+                            <li><a href="{{ url_for('contact') }}">Contact</a></li>
+                            <li><a href="{{ url_for('privacy') }}">Privacy policy</a></li>
+                            <li><a href="{{ url_for('terms') }}">Terms of service</a></li>
+                            {% if session.user_id %}<li><a href="{{ url_for('profile') }}">My profile</a></li>{% endif %}
+                        </ul>
+                    </nav>
                 </div>
-                <div class="footer-section col-lg-2 col-md-6 mb-4">
-                    <h5>Quick Links</h5>
-                    <div class="footer-links">
-                        <a href="{{ url_for('landing') }}">Home</a>
-                        <a href="{{ url_for('index') }}">Today's news</a>
-                        <a href="{{ url_for('about') }}">About Us</a>
-                        <a href="{{ url_for('contact') }}">Contact</a>
-                        <a href="{{ url_for('privacy') }}">Privacy Policy</a>
-                        <a href="{{ url_for('terms') }}">Terms of Service</a>
-                        <a href="{{ url_for('rss_feed') }}">RSS Feed</a>
-                        {% if session.user_id %}<a href="{{ url_for('profile') }}">My Profile</a>{% endif %}
-                    </div>
+                <div class="footer-bottom">
+                    <span>&copy; {{ current_year }} BrieflyAI. Made in India. Summaries are AI generated; always check the original. Photo: Bombay harbour, c. 1890, Library of Congress.</span>
+                    <button type="button" class="back-to-top-link" id="backToTopBtn">Back to top <i class="ph ph-arrow-up" aria-hidden="true"></i></button>
                 </div>
-                <div class="footer-section col-lg-2 col-md-6 mb-4">
-                    <h5>Categories</h5>
-                    <div class="footer-links">
-                        {% for cat_item in categories %}<a href="{{ url_for('index', category_name=cat_item, page=1) }}">{{ cat_item }}</a>{% endfor %}
-                    </div>
-                </div>
-                <div class="footer-section col-lg-4 col-md-6 mb-4">
-                    <h5>Newsletter</h5>
-                    <p class="small text-light">Subscribe for weekly updates!</p>
-                    <form action="{{ url_for('subscribe') }}" method="POST" class="mt-3">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <label for="footerNewsletterEmail" class="visually-hidden">Your email</label>
-                        <div class="input-group">
-                            <input type="email" id="footerNewsletterEmail" name="email" class="form-control form-control-sm footer-newsletter-input" placeholder="Your Email" aria-label="Your Email" required>
-                            <button class="btn btn-sm btn-primary" type="submit">Subscribe</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-            <div class="copyright">
-                <span>&copy; {{ current_year }} BrieflyAI. All rights reserved. Made with <i class="ph-fill ph-heart text-danger" aria-hidden="true"></i> in India.</span>
-                <button type="button" class="back-to-top-link" id="backToTopBtn"><i class="ph ph-arrow-up" aria-hidden="true"></i> Back to top</button>
             </div>
         </div>
     </footer>
@@ -4431,7 +4706,7 @@ BASE_HTML_TEMPLATE = """
                     const themeIcon = darkModeToggle.querySelector('i');
                     const themeText = darkModeToggle.querySelector('.theme-text');
                     if (themeIcon) { themeIcon.className = isDarkMode ? 'ph ph-sun me-2' : 'ph ph-moon me-2'; }
-                    if (themeText) { themeText.textContent = isDarkMode ? 'Light Mode' : 'Dark Mode'; }
+                    if (themeText) { themeText.textContent = isDarkMode ? 'Light mode' : 'Dark mode'; }
                     darkModeToggle.setAttribute('aria-pressed', isDarkMode ? 'true' : 'false');
                 };
                 const applyTheme = (theme) => {
@@ -4641,7 +4916,7 @@ _COMMENT_TEMPLATE = """
                     <textarea class="form-control form-control-sm mb-2" id="edit-content-{{ comment.id }}" name="content" rows="3" required>{{ comment.content }}</textarea>
                     <div class="d-flex justify-content-end gap-2">
                         <button type="button" class="btn btn-sm btn-outline-secondary cancel-edit-btn">Cancel</button>
-                        <button type="submit" class="btn btn-sm btn-primary">Save Changes</button>
+                        <button type="submit" class="btn btn-sm btn-primary">Save changes</button>
                     </div>
                 </form>
             </div>
@@ -4668,7 +4943,7 @@ _COMMENT_TEMPLATE = """
                     <div class="mb-2"><textarea class="form-control form-control-sm" id="reply-content-{{ comment.id }}" name="content" rows="2" placeholder="Write a reply..." required></textarea></div>
                     <div class="d-flex justify-content-end gap-2">
                         <button type="button" class="btn btn-sm btn-outline-secondary cancel-reply-btn">Cancel</button>
-                        <button type="submit" class="btn btn-sm btn-primary">Post Reply</button>
+                        <button type="submit" class="btn btn-sm btn-primary">Post reply</button>
                     </div>
                 </form>
             </div>
@@ -4709,20 +4984,22 @@ INDEX_HTML_TEMPLATE = """
     <div class="animate-fade-in">
 
         {% if synthesis %}
-        <div class="ai-synthesis-card">
-            <div class="synthesis-header">
-                <i class="ph ph-brain" aria-hidden="true"></i>
-                <h2>Today's Briefing: The Big Picture</h2>
+        <section class="ai-synthesis-card" aria-labelledby="briefingHeading">
+            <span class="photo-credit" aria-hidden="true">Darjeeling, c. 1890</span>
+            <div class="synthesis-panel">
+                <div class="synthesis-header">
+                    <h2 class="eyebrow" id="briefingHeading">Today's briefing</h2>
+                </div>
+                <p class="synthesis-text">{{ synthesis }}</p>
+                {% if keywords %}
+                <div class="synthesis-keywords">
+                    {% for keyword in keywords %}
+                        <a href="{{ url_for('search_results', query=keyword) }}" class="keyword-tag">{{ keyword }}</a>
+                    {% endfor %}
+                </div>
+                {% endif %}
             </div>
-            <p class="synthesis-text">&ldquo;{{ synthesis }}&rdquo;</p>
-            {% if keywords %}
-            <div class="synthesis-keywords">
-                {% for keyword in keywords %}
-                    <a href="{{ url_for('search_results', query=keyword) }}" class="keyword-tag">{{ keyword }}</a>
-                {% endfor %}
-            </div>
-            {% endif %}
-        </div>
+        </section>
         {% endif %}
 
         {% if featured_article %}
@@ -4730,12 +5007,12 @@ INDEX_HTML_TEMPLATE = """
             <div class="featured-story-image" style="background-image: url('{{ featured_article.urlToImage }}')" role="img" aria-label="{{ featured_article.title|truncate(80) }}"></div>
             <div class="featured-story-content">
                 <div class="article-meta">
-                    <span class="meta-item"><i class="ph ph-fire" aria-hidden="true"></i> Top Story</span>
+                    <span class="meta-item"><i class="ph ph-fire" aria-hidden="true"></i> Top story</span>
                     <span class="meta-item"><i class="ph ph-buildings" aria-hidden="true"></i> {{ featured_article.source.name|truncate(20) }}</span>
                 </div>
                 <h2><a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}">{{ featured_article.title }}</a></h2>
                 <p class="description">{{ featured_article.description|truncate(150) }}</p>
-                <a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}" class="read-more-btn">Read Full Story <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
+                <a href="{{ url_for('article_detail', article_hash_id=featured_article.id) }}" class="read-more-btn">Read the full story <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
             </div>
         </article>
         {% endif %}
@@ -4758,12 +5035,12 @@ INDEX_HTML_TEMPLATE = """
         <ul class="nav nav-tabs nav-fill mb-3" id="newsTab" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="popular-tab" data-bs-toggle="tab" data-bs-target="#popular-tab-pane" type="button" role="tab" aria-controls="popular-tab-pane" aria-selected="true">
-                    <i class="ph ph-fire me-1" aria-hidden="true"></i> POPULAR STORIES
+                    <i class="ph ph-fire me-1" aria-hidden="true"></i> Popular stories
                 </button>
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="yesterday-tab" data-bs-toggle="tab" data-bs-target="#yesterday-tab-pane" type="button" role="tab" aria-controls="yesterday-tab-pane" aria-selected="false">
-                    <i class="ph ph-clock-counter-clockwise me-1" aria-hidden="true"></i> YESTERDAY'S HEADLINES
+                    <i class="ph ph-clock-counter-clockwise me-1" aria-hidden="true"></i> Yesterday's headlines
                 </button>
             </li>
         </ul>
@@ -4790,7 +5067,7 @@ INDEX_HTML_TEMPLATE = """
                                             <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                                         </div>
                                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
+                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read more <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                                     </div>
                                 </article>
                             </div>
@@ -4806,7 +5083,7 @@ INDEX_HTML_TEMPLATE = """
                 </div>
                 {% if popular_articles %}
                 <div class="text-center mt-4">
-                    <a href="{{ url_for('index', category_name='Popular Stories') }}" class="btn btn-outline-primary">View All Popular Stories <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
+                    <a href="{{ url_for('index', category_name='Popular Stories') }}" class="btn btn-outline-primary">View all popular stories <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
                 </div>
                 {% endif %}
             </div>
@@ -4831,7 +5108,7 @@ INDEX_HTML_TEMPLATE = """
                                             <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                                         </div>
                                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
+                                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read more <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                                     </div>
                                 </article>
                             </div>
@@ -4847,7 +5124,7 @@ INDEX_HTML_TEMPLATE = """
                 </div>
                 {% if latest_yesterday_articles %}
                 <div class="text-center mt-4">
-                    <a href="{{ url_for('index', category_name="Yesterday's Headlines") }}" class="btn btn-outline-primary">View All of Yesterday's Headlines <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
+                    <a href="{{ url_for('index', category_name="Yesterday's Headlines") }}" class="btn btn-outline-primary">View all of yesterday's headlines <i class="ph ph-arrow-right ms-1" aria-hidden="true"></i></a>
                 </div>
                 {% endif %}
             </div>
@@ -4872,9 +5149,9 @@ INDEX_HTML_TEMPLATE = """
                 <p class="community-hub-sub">Real perspectives, posted by the BrieflyAI community. Have something to say about today's news?</p>
             </div>
             {% if session.user_id %}
-                <button type="button" class="btn btn-primary-modal community-hub-cta" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>Share Your Story</button>
+                <button type="button" class="btn btn-primary-modal community-hub-cta" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>Share your story</button>
             {% else %}
-                <a href="{{ url_for('login', next=request.full_path) }}" class="btn btn-outline-primary community-hub-cta"><i class="ph ph-sign-in me-2" aria-hidden="true"></i>Log In to Post</a>
+                <a href="{{ url_for('login', next=request.full_path) }}" class="btn btn-outline-primary community-hub-cta"><i class="ph ph-sign-in me-2" aria-hidden="true"></i>Log in to post</a>
             {% endif %}
         </div>
     {% elif query %}
@@ -4924,7 +5201,7 @@ INDEX_HTML_TEMPLATE = """
                             <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (art.published_at | to_ist if art.is_community_article else (art.publishedAt | to_ist if art.publishedAt else 'N/A')) }}</span>
                         </div>
                         <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
+                        <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read more <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                     </div>
                 </article>
             </div>
@@ -4936,14 +5213,14 @@ INDEX_HTML_TEMPLATE = """
             <div class="state-card-icon"><i class="ph ph-magnifying-glass" aria-hidden="true"></i></div>
             <h2 class="state-card-title">No results for &ldquo;{{ query|truncate(40) }}&rdquo;</h2>
             <p class="state-card-text">Try a different search term, or browse by category instead.</p>
-            <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Browse All Articles</a></div>
+            <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Browse all articles</a></div>
         </div>
         {% else %}
         <div class="state-card">
             <div class="state-card-icon"><i class="ph ph-newspaper" aria-hidden="true"></i></div>
             <h2 class="state-card-title">No articles here yet</h2>
             <p class="state-card-text">Try a different category, or check back again soon.</p>
-            <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Back to Homepage</a></div>
+            <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Back to homepage</a></div>
         </div>
         {% endif %}
     {% endif %}
@@ -5118,21 +5395,21 @@ ARTICLE_HTML_TEMPLATE = """
 {% if not article %}
     <div class="state-card state-card-danger">
         <div class="state-card-icon"><i class="ph ph-newspaper" aria-hidden="true"></i></div>
-        <h1 class="state-card-title">Article Not Found</h1>
+        <h1 class="state-card-title">Article not found</h1>
         <p class="state-card-text">The article you're looking for may have been removed, or the link may be incorrect.</p>
-        <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Go to Homepage</a></div>
+        <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Go to homepage</a></div>
     </div>
 {% else %}
 <div class="reading-progress" aria-hidden="true"><div class="reading-progress__fill" id="readingProgressFill"></div></div>
 <article class="article-full-content-wrapper animate-fade-in" id="articleWrapper" data-text-size="normal">
     <div class="mb-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <a href="{{ previous_list_page }}" class="btn btn-sm btn-outline-secondary"><i class="ph ph-arrow-left me-2" aria-hidden="true"></i>Back to List</a>
+        <a href="{{ previous_list_page }}" class="btn btn-sm btn-outline-secondary"><i class="ph ph-arrow-left me-2" aria-hidden="true"></i>Back to list</a>
 
         <div class="d-flex align-items-center gap-2">
 
             {% if session.get('is_admin') and is_community_article %}
             <button type="button" id="adminDeleteBtn" class="btn btn-sm btn-danger" title="Admin: Delete Post">
-                <i class="ph ph-trash" aria-hidden="true"></i> Delete Post
+                <i class="ph ph-trash" aria-hidden="true"></i> Delete post
             </button>
             {% endif %}
 
@@ -5209,15 +5486,15 @@ ARTICLE_HTML_TEMPLATE = """
     </div>
     <div id="articleAnalysisContainer">
     {% if is_community_article %}
-        {% if article.groq_summary %}<div class="summary-box my-3"><h2><i class="ph ph-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">{{ article.groq_summary|e|replace('\\n', '<br>')|safe }}</p></div>{% endif %}
-        {% if article.parsed_takeaways %}<div class="takeaways-box my-3"><h2><i class="ph ph-list-checks me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>{% for takeaway in article.parsed_takeaways %}<li>{{ takeaway }}</li>{% endfor %}</ul></div>{% endif %}
-        <hr class="my-4"><h2 class="content-divider-heading">Full Article Content</h2><div class="content-text">{{ article.full_text }}</div>
+        {% if article.groq_summary %}<div class="summary-box my-3"><h2><i class="ph ph-book-open me-2" aria-hidden="true"></i>AI summary</h2><p class="mb-0">{{ article.groq_summary|e|replace('\\n', '<br>')|safe }}</p></div>{% endif %}
+        {% if article.parsed_takeaways %}<div class="takeaways-box my-3"><h2><i class="ph ph-list-checks me-2" aria-hidden="true"></i>Key takeaways</h2><ul>{% for takeaway in article.parsed_takeaways %}<li>{{ takeaway }}</li>{% endfor %}</ul></div>{% endif %}
+        <hr class="my-4"><h2 class="content-divider-heading">Full article content</h2><div class="content-text">{{ article.full_text }}</div>
     {% else %}<div id="apiArticleContent"></div>{% endif %}
     </div>
 
     <section class="comment-section mt-5" id="comment-section">
         <div class="comment-toolbar">
-            <h2 class="mb-0">Community Discussion (<span id="comment-count">{{ total_comment_count }}</span>)</h2>
+            <h2 class="mb-0">Community discussion (<span id="comment-count">{{ total_comment_count }}</span>)</h2>
             {% if comments %}
             <div class="d-flex align-items-center gap-2">
                 <label for="commentSort" class="small text-muted mb-0">Sort</label>
@@ -5234,17 +5511,17 @@ ARTICLE_HTML_TEMPLATE = """
             {% for comment in comments %}
                 {% include '_COMMENT_TEMPLATE' %}
             {% else %}
-                <p id="no-comments-msg" class="text-muted mt-3"><i class="ph ph-chat-dots me-2" aria-hidden="true"></i>No comments yet. Be the first to share your thoughts!</p>
+                <p id="no-comments-msg" class="text-muted mt-3"><i class="ph ph-chat-dots me-2" aria-hidden="true"></i>No comments yet. Start the discussion.</p>
             {% endfor %}
         </div>
 
         {% if session.user_id %}
             <div class="add-comment-form mt-4 pt-4 border-top">
-                <h3 class="comment-form-heading">Leave a Comment</h3>
+                <h3 class="comment-form-heading">Leave a comment</h3>
                 <form id="comment-form">
                     <label class="visually-hidden" for="comment-content">Write a comment</label>
                     <div class="mb-3"><textarea class="form-control" id="comment-content" name="content" rows="4" placeholder="Share your insights..." required></textarea></div>
-                    <button type="submit" class="btn btn-primary">Post Comment</button>
+                    <button type="submit" class="btn btn-primary">Post comment</button>
                 </form>
             </div>
         {% else %}
@@ -5459,7 +5736,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const confirmed = await BrieflyAI.confirmAction({
                     title: 'Delete this post?',
                     message: 'This will permanently delete the community post and cannot be undone.',
-                    confirmText: 'Delete Post',
+                    confirmText: 'Delete post',
                     danger: true
                 });
                 if (!confirmed) return;
@@ -5475,14 +5752,14 @@ document.addEventListener('DOMContentLoaded', function () {
                     } else {
                         BrieflyAI.showToast('Deletion failed: ' + (data.error || 'Unknown error'), 'danger');
                         this.disabled = false;
-                        this.innerHTML = '<i class="ph ph-trash" aria-hidden="true"></i> Delete Post';
+                        this.innerHTML = '<i class="ph ph-trash" aria-hidden="true"></i> Delete post';
                     }
                 })
                 .catch(err => {
                     console.error("Admin delete error:", err);
                     BrieflyAI.showToast("A network error occurred. Could not delete the post.", 'danger');
                     this.disabled = false;
-                    this.innerHTML = '<i class="ph ph-trash" aria-hidden="true"></i> Delete Post';
+                    this.innerHTML = '<i class="ph ph-trash" aria-hidden="true"></i> Delete post';
                 });
             });
         }
@@ -5502,8 +5779,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (analysis) {
                         if (analysis.error) { html += `<div class="alert alert-secondary small p-3 mt-3">AI analysis could not be performed: ${analysis.error}</div>`; }
                         else {
-                            if (analysis.groq_summary) { html += `<div class="summary-box my-3"><h2><i class="ph ph-book-open me-2" aria-hidden="true"></i>AI Summary</h2><p class="mb-0">${analysis.groq_summary.replace(/\\n/g, '<br>')}</p></div>`; }
-                            if (analysis.groq_takeaways && analysis.groq_takeaways.length > 0) { html += `<div class="takeaways-box my-3"><h2><i class="ph ph-list-checks me-2" aria-hidden="true"></i>AI Key Takeaways</h2><ul>${analysis.groq_takeaways.map(t => `<li>${String(t)}</li>`).join('')}</ul></div>`; }
+                            if (analysis.groq_summary) { html += `<div class="summary-box my-3"><h2><i class="ph ph-book-open me-2" aria-hidden="true"></i>AI summary</h2><p class="mb-0">${analysis.groq_summary.replace(/\\n/g, '<br>')}</p></div>`; }
+                            if (analysis.groq_takeaways && analysis.groq_takeaways.length > 0) { html += `<div class="takeaways-box my-3"><h2><i class="ph ph-list-checks me-2" aria-hidden="true"></i>Key takeaways</h2><ul>${analysis.groq_takeaways.map(t => `<li>${String(t)}</li>`).join('')}</ul></div>`; }
                         }
                     }
                     if (articleUrl) { html += `<hr class="my-4"><a href="${articleUrl}" class="btn btn-outline-primary mt-3 mb-3" target="_blank" rel="noopener noreferrer">Read Original Article at ${articleSourceName} <i class="ph ph-arrow-square-out ms-1" aria-hidden="true"></i></a>`; }
@@ -5826,8 +6103,8 @@ LOGIN_HTML_TEMPLATE = """
 {% block content %}
 <div class="auth-card animate-fade-in">
     <div class="auth-header">
-        <div class="icon"><i class="ph-fill ph-lightning" aria-hidden="true"></i></div>
-        <h1>Welcome Back to BrieflyAI</h1>
+        <div class="icon icon-logo"><svg class="logo-mark" viewBox="0 0 32 32" width="48" height="48" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg></div>
+        <h1>Welcome back</h1>
     </div>
     <div class="auth-body">
         <form method="POST" action="{{ url_for('login', next=request.args.get('next')) }}" id="loginForm">
@@ -5846,7 +6123,7 @@ LOGIN_HTML_TEMPLATE = """
                     <input type="password" class="form-control" id="password" name="password" required placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" autocomplete="current-password">
                 </div>
             </div>
-            <button type="submit" class="btn btn-primary w-100" id="loginSubmitBtn">Sign In</button>
+            <button type="submit" class="btn btn-primary w-100" id="loginSubmitBtn">Sign in</button>
         </form>
     </div>
     <div class="auth-footer">
@@ -5880,14 +6157,14 @@ REGISTER_HTML_TEMPLATE = """
 {% block content %}
 <div class="auth-card animate-fade-in">
      <div class="auth-header">
-        <div class="icon"><i class="ph ph-user-plus" aria-hidden="true"></i></div>
-        <h1>Create Your Account</h1>
+        <div class="icon icon-logo"><svg class="logo-mark" viewBox="0 0 32 32" width="48" height="48" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg></div>
+        <h1>Create your account</h1>
     </div>
     <div class="auth-body">
         <form method="POST" action="{{ url_for('register') }}" id="registerForm">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
              <div class="mb-3">
-                <label for="name" class="form-label fw-medium">Full Name</label>
+                <label for="name" class="form-label fw-medium">Full name</label>
                 <div class="input-group-icon">
                     <i class="ph ph-identification-card input-icon" aria-hidden="true"></i>
                     <input type="text" class="form-control" id="name" name="name" required placeholder="e.g. John Doe" autocomplete="name">
@@ -5907,12 +6184,12 @@ REGISTER_HTML_TEMPLATE = """
                     <input type="password" class="form-control" id="password" name="password" required minlength="6" placeholder="min 6 chars" autocomplete="new-password">
                 </div>
             </div>
-            <button type="submit" class="btn btn-primary w-100" id="registerSubmitBtn">Create Account</button>
+            <button type="submit" class="btn btn-primary w-100" id="registerSubmitBtn">Create account</button>
         </form>
     </div>
     <div class="auth-footer">
         <p class="mb-0 small">
-            Already have an account? <a href="{{ url_for('login') }}" class="fw-bold text-decoration-none">Sign In</a>
+            Already have an account? <a href="{{ url_for('login') }}" class="fw-bold text-decoration-none">Sign in</a>
         </p>
     </div>
 </div>
@@ -5947,7 +6224,7 @@ PROFILE_HTML_TEMPLATE = """
         <button type="button" class="stat-item" data-target-tab="posted-tab" aria-label="View articles you've posted">
             <div class="icon"><i class="ph ph-note-pencil" aria-hidden="true"></i></div>
             <div class="count">{{ posted_articles|length }}</div>
-            <div class="label">Articles Posted</div>
+            <div class="label">Articles posted</div>
         </button>
         <button type="button" class="stat-item" data-target-tab="bookmarks-tab" aria-label="View your bookmarks">
             <div class="icon"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></div>
@@ -5960,10 +6237,10 @@ PROFILE_HTML_TEMPLATE = """
 <div class="mt-4 animate-fade-in" style="animation-delay: 0.1s;">
     <ul class="nav nav-tabs profile-tabs nav-fill mb-4" id="profileTab" role="tablist">
         <li class="nav-item" role="presentation">
-            <button class="nav-link active" id="bookmarks-tab" data-bs-toggle="tab" data-bs-target="#bookmarks-content" type="button" role="tab" aria-controls="bookmarks-content" aria-selected="true"><i class="ph-fill ph-bookmark-simple me-2" aria-hidden="true"></i>My Bookmarks</button>
+            <button class="nav-link active" id="bookmarks-tab" data-bs-toggle="tab" data-bs-target="#bookmarks-content" type="button" role="tab" aria-controls="bookmarks-content" aria-selected="true"><i class="ph-fill ph-bookmark-simple me-2" aria-hidden="true"></i>My bookmarks</button>
         </li>
         <li class="nav-item" role="presentation">
-            <button class="nav-link" id="posted-tab" data-bs-toggle="tab" data-bs-target="#posted-content" type="button" role="tab" aria-controls="posted-content" aria-selected="false"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>My Articles</button>
+            <button class="nav-link" id="posted-tab" data-bs-toggle="tab" data-bs-target="#posted-content" type="button" role="tab" aria-controls="posted-content" aria-selected="false"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>My articles</button>
         </li>
     </ul>
     <div class="tab-content" id="profileTabContent">
@@ -5976,7 +6253,7 @@ PROFILE_HTML_TEMPLATE = """
                         <div class="article-image-container {% if not art.urlToImage %}img-fallback{% endif %}">
                             <a href="{{ art.article_url }}" tabindex="-1" aria-hidden="true">{% if art.urlToImage %}<img src="{{ art.urlToImage }}" class="article-image" alt="{{ art.title|truncate(50) }}" loading="lazy" decoding="async">{% endif %}</a>
                             <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
-                            {% if art.is_stale_bookmark %}<span class="badge bg-secondary position-absolute top-0 end-0 m-2">Cached Bookmark</span>{% endif %}
+                            {% if art.is_stale_bookmark %}<span class="badge bg-secondary position-absolute top-0 end-0 m-2">Cached bookmark</span>{% endif %}
                         </div>
                         <div class="article-body d-flex flex-column">
                             <h3 class="article-title mb-2"><a href="{{ art.article_url }}" class="text-decoration-none">{{ art.title|truncate(70) }}</a></h3>
@@ -5985,7 +6262,7 @@ PROFILE_HTML_TEMPLATE = """
                                 <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ (art.publishedAt | to_ist if art.publishedAt else 'N/A') }}</span>
                             </div>
                             <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                            <a href="{{ art.article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
+                            <a href="{{ art.article_url }}" class="read-more btn btn-sm mt-auto">Read more <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                         </div>
                     </article>
                 </div>
@@ -5994,9 +6271,9 @@ PROFILE_HTML_TEMPLATE = """
             {% else %}
                 <div class="state-card">
                     <div class="state-card-icon"><i class="ph-fill ph-bookmark-simple" aria-hidden="true"></i></div>
-                    <h2 class="state-card-title">No Bookmarks Yet</h2>
+                    <h2 class="state-card-title">No bookmarks yet</h2>
                     <p class="state-card-text">Find an article you like and tap the bookmark icon to save it here.</p>
-                    <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Browse Articles</a></div>
+                    <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Browse articles</a></div>
                 </div>
             {% endif %}
 
@@ -6028,7 +6305,7 @@ PROFILE_HTML_TEMPLATE = """
                                 <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ art.published_at | to_ist }}</span>
                             </div>
                             <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                            <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
+                            <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read more <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                         </div>
                     </article>
                 </div>
@@ -6037,9 +6314,9 @@ PROFILE_HTML_TEMPLATE = """
             {% else %}
                 <div class="state-card">
                     <div class="state-card-icon"><i class="ph ph-note-pencil" aria-hidden="true"></i></div>
-                    <h2 class="state-card-title">Nothing Posted Yet</h2>
+                    <h2 class="state-card-title">Nothing posted yet</h2>
                     <p class="state-card-text">Share your first story with the BrieflyAI community &mdash; it only takes a minute.</p>
-                    <div class="state-card-actions"><button type="button" class="btn btn-primary-modal" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>Write a Post</button></div>
+                    <div class="state-card-actions"><button type="button" class="btn btn-primary-modal" data-bs-toggle="modal" data-bs-target="#addArticleModal"><i class="ph ph-note-pencil me-2" aria-hidden="true"></i>Write a post</button></div>
                 </div>
             {% endif %}
         </div>
@@ -6147,7 +6424,7 @@ PUBLIC_PROFILE_HTML_TEMPLATE = """
                         <span class="meta-item text-muted"><i class="ph ph-calendar-blank" aria-hidden="true"></i> {{ art.published_at | to_ist }}</span>
                     </div>
                     <p class="article-description small">{{ art.description|truncate(100) }}</p>
-                    <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read More <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
+                    <a href="{{ article_url }}" class="read-more btn btn-sm mt-auto">Read more <i class="ph ph-caret-right ms-1 small" aria-hidden="true"></i></a>
                 </div>
             </article>
         </div>
@@ -6156,9 +6433,9 @@ PUBLIC_PROFILE_HTML_TEMPLATE = """
         <div class="col-12">
             <div class="state-card">
                 <div class="state-card-icon"><i class="ph ph-note-pencil" aria-hidden="true"></i></div>
-                <h2 class="state-card-title">No Articles Yet</h2>
+                <h2 class="state-card-title">No articles yet</h2>
                 <p class="state-card-text">{{ user.name }} hasn't posted any articles yet. Check back soon.</p>
-                <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Explore Other Articles</a></div>
+                <div class="state-card-actions"><a href="{{ url_for('index') }}" class="btn btn-primary-modal">Explore other articles</a></div>
             </div>
         </div>
     {% endif %}
@@ -6179,7 +6456,7 @@ ABOUT_US_HTML_TEMPLATE = """
             Welcome to BrieflyAI, your premier destination for the latest news from India and around the world, delivered in a concise and easy-to-digest format. We leverage the power of cutting-edge AI to summarize complex news articles into key takeaways, saving you time while keeping you informed.
         </p>
 
-        <h2><i class="icon ph ph-target" aria-hidden="true"></i>Our Mission</h2>
+        <h2><i class="icon ph ph-target" aria-hidden="true"></i>Our mission</h2>
         <p>
             In a world of information overload, our mission is to provide clarity and efficiency. We believe that everyone deserves access to accurate, unbiased news without spending hours sifting through lengthy articles. BrieflyAI cuts through the noise, offering insightful summaries that matter.
         </p>
@@ -6189,7 +6466,7 @@ ABOUT_US_HTML_TEMPLATE = """
             Beyond AI-driven news, BrieflyAI is a platform for discussion and community engagement. Our Community Hub allows users to post their own articles, share perspectives, and engage in meaningful conversations about the topics that shape our world. We are committed to fostering a respectful and intelligent environment for all our members.
         </p>
 
-        <h2><i class="icon ph ph-cpu" aria-hidden="true"></i>Our Technology</h2>
+        <h2><i class="icon ph ph-cpu" aria-hidden="true"></i>Our technology</h2>
         <p>
             We use state-of-the-art Natural Language Processing (NLP) models to analyze and summarize news content from trusted sources. Our system is designed to identify the most crucial points of an article, presenting them as a quick summary and a list of key takeaways, ensuring you get the essence of the story in seconds.
         </p>
@@ -6203,17 +6480,17 @@ CONTACT_HTML_TEMPLATE = """
 {% block content %}
 <div class="animate-fade-in">
     <div class="page-header-static">
-        <h1>Get In Touch</h1>
+        <h1>Get in touch</h1>
     </div>
     <div class="static-content-container">
         <p class="lead text-center mb-5">
-            We'd love to hear from you! Whether you have a question, feedback, or a news tip, feel free to reach out using one of the methods below.
+            We'd love to hear from you. Whether you have a question, feedback, or a news tip, feel free to reach out using one of the methods below.
         </p>
         <div class="row g-4">
             <div class="col-md-6">
                 <div class="contact-card">
                     <div class="icon"><i class="ph ph-envelope" aria-hidden="true"></i></div>
-                    <h2 class="h5">General Inquiries</h2>
+                    <h2 class="h5">General inquiries</h2>
                     <p class="text-muted">For general questions, feedback, or support, please email us at:</p>
                     <a href="mailto:vbansal639@gmail.com" class="fw-bold">vbansal639@gmail.com</a>
                 </div>
@@ -6221,7 +6498,7 @@ CONTACT_HTML_TEMPLATE = """
             <div class="col-md-6">
                 <div class="contact-card">
                     <div class="icon"><i class="ph ph-handshake" aria-hidden="true"></i></div>
-                    <h2 class="h5">Partnerships &amp; Media</h2>
+                    <h2 class="h5">Partnerships &amp; media</h2>
                     <p class="text-muted">For partnership opportunities or media inquiries, please contact us at:</p>
                     <a href="mailto:vbansal639@gmail.com" class="fw-bold">vbansal639@gmail.com</a>
                 </div>
@@ -6229,7 +6506,7 @@ CONTACT_HTML_TEMPLATE = """
         </div>
 
         <div class="text-center mt-5">
-            <h2 class="h3">Follow Us</h2>
+            <h2 class="h3">Follow us</h2>
             <p class="text-muted">Stay connected with us on social media.</p>
             <div class="contact-social-links mt-3">
                 <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="ph ph-x-logo" aria-hidden="true"></i></a>
@@ -6248,16 +6525,16 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
 {% block content %}
 <div class="animate-fade-in">
     <div class="page-header-static">
-        <h1>Privacy Policy</h1>
+        <h1>Privacy policy</h1>
     </div>
     <div class="static-content-container">
         <p class="text-muted">Last updated: November 6, 2026</p>
         <p>BrieflyAI ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you visit our website.</p>
 
-        <h2><i class="icon ph ph-shield-check" aria-hidden="true"></i>1. Information We Collect</h2>
+        <h2><i class="icon ph ph-shield-check" aria-hidden="true"></i>1. Information we collect</h2>
         <p>We may collect personal information that you voluntarily provide to us when you register on the website, post articles or comments, bookmark articles, send a testimonial, or subscribe to our newsletter. This information may include your name, username, email address, and your activities on our platform such as articles posted and bookmarked.</p>
 
-        <h2><i class="icon ph ph-list-checks" aria-hidden="true"></i>2. How We Use Your Information</h2>
+        <h2><i class="icon ph ph-list-checks" aria-hidden="true"></i>2. How we use your information</h2>
         <p>We use the information we collect to:</p>
         <ul>
             <li>Create and manage your account.</li>
@@ -6269,16 +6546,16 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
             <li>Improve our website and services.</li>
         </ul>
 
-        <h2><i class="icon ph ph-share-network" aria-hidden="true"></i>3. Disclosure of Your Information</h2>
+        <h2><i class="icon ph ph-share-network" aria-hidden="true"></i>3. Disclosure of your information</h2>
         <p>Your username and posted articles are publicly visible. Your bookmarked articles are visible on your profile page to you when logged in. We do not sell, trade, or otherwise transfer your personally identifiable information like your email address to outside parties without your consent, except to trusted third parties who assist us in operating our website, so long as those parties agree to keep this information confidential.</p>
 
-        <h2><i class="icon ph ph-lock" aria-hidden="true"></i>4. Security of Your Information</h2>
+        <h2><i class="icon ph ph-lock" aria-hidden="true"></i>4. Security of your information</h2>
         <p>We use administrative, technical, and physical security measures to help protect your personal information. While we have taken reasonable steps to secure the personal information you provide to us, please be aware that despite our efforts, no security measures are perfect or impenetrable.</p>
 
-        <h2><i class="icon ph ph-pencil-simple-line" aria-hidden="true"></i>5. Your Choices</h2>
+        <h2><i class="icon ph ph-pencil-simple-line" aria-hidden="true"></i>5. Your choices</h2>
         <p>You can review and change your profile information by logging into your account. You may also request deletion of your account and associated data by contacting us.</p>
 
-        <h2><i class="icon ph ph-arrows-clockwise" aria-hidden="true"></i>6. Changes to This Privacy Policy</h2>
+        <h2><i class="icon ph ph-arrows-clockwise" aria-hidden="true"></i>6. Changes to this privacy policy</h2>
         <p>We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page. You are advised to review this Privacy Policy periodically for any changes.</p>
     </div>
 </div>
@@ -6287,10 +6564,10 @@ PRIVACY_POLICY_HTML_TEMPLATE = """
 ERROR_404_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}404 Not Found - BrieflyAI{% endblock %}{% block content %}
 <div class="state-card state-card-narrow animate-fade-in">
     <div class="state-card-icon"><i class="ph ph-signpost" aria-hidden="true"></i></div>
-    <h1 class="state-card-title">Page Not Found</h1>
+    <h1 class="state-card-title">Page not found</h1>
     <p class="state-card-text">Sorry, the page you're looking for doesn't exist or may have been moved.</p>
     <div class="state-card-actions">
-        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="ph ph-house me-2" aria-hidden="true"></i>Go to Homepage</a>
+        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="ph ph-house me-2" aria-hidden="true"></i>Go to homepage</a>
     </div>
 </div>
 {% endblock %}"""
@@ -6298,21 +6575,21 @@ ERROR_404_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}404 N
 ERROR_500_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}500 Server Error - BrieflyAI{% endblock %}{% block content %}
 <div class="state-card state-card-narrow state-card-danger animate-fade-in">
     <div class="state-card-icon"><i class="ph ph-hard-drives" aria-hidden="true"></i></div>
-    <h1 class="state-card-title">Something Went Wrong</h1>
+    <h1 class="state-card-title">Something went wrong</h1>
     <p class="state-card-text">We hit a snag on our end. We've been notified and are looking into it.</p>
     <div class="state-card-actions">
-        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="ph ph-house me-2" aria-hidden="true"></i>Go to Homepage</a>
-        <button type="button" class="btn btn-outline-secondary" onclick="window.location.reload()"><i class="ph ph-arrow-clockwise me-2" aria-hidden="true"></i>Try Again</button>
+        <a href="{{ url_for('index') }}" class="btn btn-primary-modal"><i class="ph ph-house me-2" aria-hidden="true"></i>Go to homepage</a>
+        <button type="button" class="btn btn-outline-secondary" onclick="window.location.reload()"><i class="ph ph-arrow-clockwise me-2" aria-hidden="true"></i>Try again</button>
     </div>
 </div>
 {% endblock %}"""
 OFFLINE_TEMPLATE = """{% extends "BASE_HTML_TEMPLATE" %}{% block title %}Offline - BrieflyAI{% endblock %}{% block content %}
 <div class="state-card state-card-narrow animate-fade-in">
     <div class="state-card-icon"><i class="ph ph-wifi-slash" aria-hidden="true"></i></div>
-    <h1 class="state-card-title">You're Offline</h1>
+    <h1 class="state-card-title">You're offline</h1>
     <p class="state-card-text">We couldn't reach the network. Any pages you've already opened are still available, and new stories will load as soon as you're back online.</p>
     <div class="state-card-actions">
-        <button type="button" class="btn btn-primary-modal" onclick="window.location.reload()"><i class="ph ph-arrow-clockwise me-2" aria-hidden="true"></i>Try Again</button>
+        <button type="button" class="btn btn-primary-modal" onclick="window.location.reload()"><i class="ph ph-arrow-clockwise me-2" aria-hidden="true"></i>Try again</button>
         <a href="{{ url_for('index') }}" class="btn btn-outline-secondary"><i class="ph ph-house me-2" aria-hidden="true"></i>Homepage</a>
     </div>
 </div>
@@ -6570,10 +6847,10 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     <title>BrieflyAI: India's news, one minute per story</title>
     <meta name="description" content="Short AI summaries and key takeaways for India's top stories from {{ sources_short }} and more. Free to read, no account needed.">
     <link rel="canonical" href="{{ canonical_url }}">
-    <meta name="theme-color" content="#F7F5EF" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#131209" media="(prefers-color-scheme: dark)">
+    {% if theme == 'dark' %}<meta name="theme-color" content="#131209">{% elif theme == 'light' %}<meta name="theme-color" content="#F7F5EF">{% else %}<meta name="theme-color" content="#F7F5EF" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#131209" media="(prefers-color-scheme: dark)">{% endif %}
     <link rel="manifest" href="{{ url_for('web_manifest') }}">
-    <link rel="icon" href="{{ url_for('app_icon', size=192) }}" type="image/svg+xml">
+    <link rel="icon" href="{{ url_for('app_icon', size=192, v=2) }}" type="image/svg+xml">
 
     <meta property="og:site_name" content="BrieflyAI">
     <meta property="og:type" content="website">
@@ -6637,6 +6914,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             --text-muted: #5A564C;
             --text-subtle: #777266;
             --accent: #12645E;
+            --logo-gist: #6CC9BD;
             --btn-bg: #16140F;
             --btn-text: #F7F5EF;
             --btn-hover: #2E2B23;
@@ -6662,7 +6940,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             --text: #F2EFE6;
             --text-muted: #ABA697;
             --text-subtle: #8C887B;
-            --accent: #6CC9BD;
+            --accent: #6CC9BD; --logo-gist: #12645E;
             --btn-bg: #F2EFE6;
             --btn-text: #131209;
             --btn-hover: #DAD6CB;
@@ -6689,7 +6967,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                 --text: #F2EFE6;
                 --text-muted: #ABA697;
                 --text-subtle: #8C887B;
-                --accent: #6CC9BD;
+                --accent: #6CC9BD; --logo-gist: #12645E;
                 --btn-bg: #F2EFE6;
                 --btn-text: #131209;
                 --btn-hover: #DAD6CB;
@@ -6774,6 +7052,10 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
         :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--rounded-md); }
 
         .icon { width: 20px; height: 20px; flex: none; fill: currentColor; }
+        .logo-mark { display: block; width: 24px; height: 24px; flex: none; }
+        .logo-tile { fill: var(--text); }
+        .logo-line { fill: var(--bg); }
+        .logo-gist { fill: var(--logo-gist); }
         .icon-sm { width: 16px; height: 16px; }
         .icon-lg { width: 24px; height: 24px; }
 
@@ -7137,7 +7419,6 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
 <body>
     {# Phosphor icons (MIT), inlined as a sprite so the page needs no icon font. #}
     <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
-    <symbol id="ph-lightning-fill" viewBox="0 0 256 256"><path d="M213.85,125.46l-112,120a8,8,0,0,1-13.69-7l14.66-73.33L45.19,143.49a8,8,0,0,1-3-13l112-120a8,8,0,0,1,13.69,7L153.18,90.9l57.63,21.61a8,8,0,0,1,3,12.95Z"/></symbol>
     <symbol id="ph-arrow-right" viewBox="0 0 256 256"><path d="M221.66,133.66l-72,72a8,8,0,0,1-11.32-11.32L196.69,136H40a8,8,0,0,1,0-16H196.69L138.34,61.66a8,8,0,0,1,11.32-11.32l72,72A8,8,0,0,1,221.66,133.66Z"/></symbol>
     <symbol id="ph-arrow-up-right" viewBox="0 0 256 256"><path d="M200,64V168a8,8,0,0,1-16,0V83.31L69.66,197.66a8,8,0,0,1-11.32-11.32L172.69,72H88a8,8,0,0,1,0-16H192A8,8,0,0,1,200,64Z"/></symbol>
     <symbol id="ph-check-circle" viewBox="0 0 256 256"><path d="M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"/></symbol>
@@ -7164,7 +7445,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     <header>
         <nav class="site-nav" aria-label="Main">
             <a class="nav-brand title-3" href="{{ url_for('landing') }}" aria-label="BrieflyAI, back to top">
-                <svg class="icon" aria-hidden="true"><use href="#ph-lightning-fill"></use></svg>
+                <svg class="logo-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg>
                 <span>BrieflyAI</span>
             </a>
             <ul class="nav-links title-4">
@@ -7524,7 +7805,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
             <div class="footer-panel">
                 <div class="footer-top">
                     <div>
-                        <a class="footer-brand title-3" href="{{ url_for('landing') }}"><svg class="icon" aria-hidden="true"><use href="#ph-lightning-fill"></use></svg><span>BrieflyAI</span></a>
+                        <a class="footer-brand title-3" href="{{ url_for('landing') }}"><svg class="logo-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg><span>BrieflyAI</span></a>
                         <p class="footer-blurb body-6">Short AI summaries and key takeaways for India's top stories.</p>
                     </div>
                     <nav class="footer-col" aria-label="Read">
