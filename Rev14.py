@@ -2988,7 +2988,7 @@ def news_sitemap():
 
 @app.route('/favicon.ico')
 def favicon_ico():
-    return redirect(url_for('app_icon', size=192, v=2), code=301)
+    return app.send_static_file('favicon.ico')
 
 
 @app.context_processor
@@ -3128,6 +3128,11 @@ def web_manifest():
             "src": url_for('app_icon', size=size, v=2),
             "sizes": f"{size}x{size}",
             "type": "image/svg+xml",
+            "purpose": "any",
+        } for size in (192, 512)] + [{
+            "src": url_for('static', filename=f'favicon-{size}.png'),
+            "sizes": f"{size}x{size}",
+            "type": "image/png",
             "purpose": "any",
         } for size in (192, 512)],
     }
@@ -4595,7 +4600,10 @@ BASE_HTML_TEMPLATE = """
     {% if _theme_pref == 'enabled' %}<meta name="theme-color" content="#131209">{% elif _theme_pref == 'disabled' %}<meta name="theme-color" content="#F7F5EF">{% else %}<meta name="theme-color" content="#F7F5EF" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#131209" media="(prefers-color-scheme: dark)">{% endif %}
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <link rel="manifest" href="{{ url_for('web_manifest') }}">
-    <link rel="icon" href="{{ url_for('app_icon', size=192, v=2) }}" type="image/svg+xml">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="48x48">
+    <link rel="icon" href="{{ url_for('static', filename='favicon-96.png') }}" type="image/png" sizes="96x96">
+    <link rel="icon" href="{{ url_for('app_icon', size=192, v=3) }}" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
     <link rel="alternate" type="application/rss+xml" title="BrieflyAI: India news in short" href="{{ url_for('rss_feed') }}">
     {% if adsense_client %}<meta name="google-adsense-account" content="{{ adsense_client }}">{% endif %}
     {% if ads_on_page %}<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}" crossorigin="anonymous"></script>{% endif %}
@@ -6878,7 +6886,7 @@ ARTICLE_HTML_TEMPLATE = """
   {% if is_community_article and article.author %}"author": { "@type": "Person", "name": {{ article.author.name|tojson }}, "url": {{ url_for('public_profile', username=article.author.username, _external=True)|tojson }} },
   {% else %}"author": { "@type": "Organization", "name": "BrieflyAI", "url": {{ url_for('about', _external=True)|tojson }} },
   {% if article.url %}"isBasedOn": { "@type": "NewsArticle", "url": {{ article.url|tojson }}, "publisher": { "@type": "Organization", "name": {{ (article.source.name if article.source else 'News')|tojson }} } },{% endif %}
-  {% endif %}"publisher": { "@type": "Organization", "name": "BrieflyAI", "url": {{ url_for('landing', _external=True)|tojson }}, "logo": { "@type": "ImageObject", "url": {{ url_for('static', filename='og-welcome.jpg', _external=True)|tojson }} } },
+  {% endif %}"publisher": { "@type": "Organization", "name": "BrieflyAI", "url": {{ url_for('landing', _external=True)|tojson }}, "logo": { "@type": "ImageObject", "url": {{ url_for('static', filename='favicon-512.png', _external=True)|tojson }} } },
   "mainEntityOfPage": { "@type": "WebPage", "@id": {{ request.base_url|tojson }} }
 }
 </script>
@@ -8567,15 +8575,18 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>BrieflyAI: India's news, one minute per story</title>
-    <meta name="description" content="Short AI summaries and key takeaways for India's top stories from {{ sources_short }} and more. Free to read, no account needed.">
+    <title>BrieflyAI: AI News Summaries of India's Top Stories</title>
+    <meta name="description" content="BrieflyAI is a free AI news summary site: 60-word summaries and key takeaways of India's top stories from {{ sources_short }} and more.">
     <link rel="canonical" href="{{ canonical_url }}">
     {% if theme == 'dark' %}<meta name="theme-color" content="#131209">{% elif theme == 'light' %}<meta name="theme-color" content="#F7F5EF">{% else %}<meta name="theme-color" content="#F7F5EF" media="(prefers-color-scheme: light)">
     <meta name="theme-color" content="#131209" media="(prefers-color-scheme: dark)">{% endif %}
     <link rel="manifest" href="{{ url_for('web_manifest') }}">
     {% if adsense_client %}<meta name="google-adsense-account" content="{{ adsense_client }}">{% endif %}
     {% if ads_on_page %}<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}" crossorigin="anonymous"></script>{% endif %}
-    <link rel="icon" href="{{ url_for('app_icon', size=192, v=2) }}" type="image/svg+xml">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="48x48">
+    <link rel="icon" href="{{ url_for('static', filename='favicon-96.png') }}" type="image/png" sizes="96x96">
+    <link rel="icon" href="{{ url_for('app_icon', size=192, v=3) }}" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
 
     <meta property="og:site_name" content="BrieflyAI">
     <meta property="og:type" content="website">
@@ -8597,7 +8608,7 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     <script type="application/ld+json">{{ faq_schema|tojson }}</script>
     <script type="application/ld+json">{{ {"@context": "https://schema.org", "@graph": [
         {"@type": "Organization", "@id": canonical_url ~ "#organization", "name": "BrieflyAI", "url": canonical_url,
-         "logo": url_for('static', filename='og-welcome.jpg', _external=True)},
+         "logo": url_for('static', filename='favicon-512.png', _external=True)},
         {"@type": "WebSite", "@id": canonical_url ~ "#website", "name": "BrieflyAI", "url": canonical_url,
          "publisher": {"@id": canonical_url ~ "#organization"}, "inLanguage": "en-IN",
          "potentialAction": {"@type": "SearchAction",
