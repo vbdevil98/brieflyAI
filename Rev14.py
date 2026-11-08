@@ -141,6 +141,31 @@ app.config['CATEGORIES'] = ['All Articles', 'Popular Stories', "Yesterday's Head
 # What readers see; the keys above stay as they are because they are in old links.
 CATEGORY_LABELS = {'All Articles': 'Latest', 'Popular Stories': 'Most read',
                    "Yesterday's Headlines": 'Yesterday', 'Community Hub': 'Community'}
+# Search titles and descriptions for list pages (titles before " | BrieflyAI", under 60 characters in all).
+CATEGORY_SEO = {
+    'All Articles': {'title': 'Latest News India in Short, Updated Hourly',
+                     'description': 'The newest Indian and world news as it breaks, condensed into 60-word summaries with key takeaways and a link to the original report.'},
+    'Popular Stories': {'title': 'Most Read News Today in India',
+                        'description': 'The stories readers in India are reading most today, each summarised in under 60 words with the key facts and a link to the full report.'},
+    "Yesterday's Headlines": {'title': "Yesterday's Top News Headlines, Summarised",
+                              'description': "Missed yesterday's news? Catch up on the top stories from India and the world in 60-word summaries with key takeaways."},
+    'Community Hub': {'title': 'Community Stories from Our Readers',
+                      'description': "Perspectives on today's news written by BrieflyAI readers, with AI summaries and an open discussion under every post."},
+}
+TOPIC_SEO = {
+    'india': {'title': 'India News Today in Short',
+              'description': 'Latest India news on politics, states, courts and policy, in 60-word AI summaries with key takeaways from trusted newsrooms.'},
+    'business': {'title': 'Business News Today in Short: Markets, Economy',
+                 'description': "Indian business, markets and economy news in 60-word summaries. The key numbers and takeaways from today's top stories in under a minute."},
+    'world': {'title': 'World News Today in Short',
+              'description': 'Top international news summarised in 60 words with key takeaways and what it means for India. Updated through the day.'},
+    'sports': {'title': 'Sports News Today in Short: Cricket and More',
+               'description': "Cricket, football, chess and more: today's sports news from India and the world in quick 60-word summaries with the key results."},
+    'tech': {'title': 'Tech News India Today in Short',
+             'description': "Technology, AI, gadgets and startup news in 60-word summaries. The key takeaways from today's tech stories, with links to the full reports."},
+    'entertainment': {'title': 'Entertainment News Today in Short',
+                      'description': 'Bollywood, OTT, music and celebrity news in quick 60-word summaries with key takeaways, updated through the day.'},
+}
 
 app.config['NEWS_API_QUERY'] = 'India OR "Indian politics" OR "Indian economy" OR "Bollywood"'
 app.config['NEWS_API_DOMAINS'] = 'timesofindia.indiatimes.com,thehindu.com,ndtv.com,indianexpress.com,hindustantimes.com'
@@ -1536,6 +1561,8 @@ def inject_global_vars():
             'request': request,
             'groq_client': bool(groq_client),
             'category_labels': CATEGORY_LABELS,
+            'category_seo': CATEGORY_SEO,
+            'topic_seo': TOPIC_SEO,
             'google_client_id': GOOGLE_CLIENT_ID}
 
 MAX_PAGE = 10000  # guards against ?page=999999999 style requests
@@ -1852,7 +1879,9 @@ def article_detail(article_hash_id):
                 article_data['groq_summary'] = ready.get('groq_summary')
                 article_data['groq_takeaways'] = ready.get('groq_takeaways') or []
         else:
-            flash("Article not found.", "danger"); return redirect(previous_list_page)
+            return render_template("ARTICLE_HTML_TEMPLATE", article=None, is_community_article=False,
+                                   comments=[], comment_data={}, total_comment_count=0,
+                                   previous_list_page=previous_list_page, is_bookmarked=False), 404
 
     if 'user_id' in session:
         is_bookmarked = bool(BookmarkedArticle.query.filter_by(user_id=session['user_id'], article_hash_id=article_hash_id).first())
@@ -2803,17 +2832,40 @@ def _xml_escape(text):
 @app.route('/feed.xml')
 @app.route('/rss')
 def rss_feed():
-    """RSS 2.0 feed of the newest community articles."""
+    """RSS 2.0 feed of the newest summarised news stories and community articles."""
     try:
         articles = (CommunityArticle.query
                     .options(joinedload(CommunityArticle.author))
                     .order_by(CommunityArticle.published_at.desc())
                     .limit(40).all())
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"RSS feed query failed: {e}", exc_info=True)
         articles = []
 
     items = []
+    stories = _summarised_stories(limit=50)
+    summaries = {}
+    if stories:
+        try:
+            summaries = {r.article_hash_id: r.groq_summary for r in ArticleAnalysis.query.filter(
+                ArticleAnalysis.article_hash_id.in_([row.article_hash_id for row, _ in stories])).all()}
+        except Exception:
+            db.session.rollback()
+    for row, _analysed_at in stories:
+        link = url_for('article_detail', article_hash_id=row.article_hash_id, _external=True)
+        published = row.published_at.replace(tzinfo=timezone.utc) if row.published_at else None
+        pub_date = published.strftime('%a, %d %b %Y %H:%M:%S %z') if published else ''
+        items.append(
+            "<item>"
+            f"<title>{_xml_escape(row.title)}</title>"
+            f"<link>{_xml_escape(link)}</link>"
+            f"<guid isPermaLink=\"true\">{_xml_escape(link)}</guid>"
+            f"<description>{_xml_escape(summaries.get(row.article_hash_id) or '')}</description>"
+            f"<source url=\"{_xml_escape(row.url)}\">{_xml_escape(row.source_name or 'News')}</source>"
+            f"<pubDate>{_xml_escape(pub_date)}</pubDate>"
+            "</item>"
+        )
     for art in articles:
         link = url_for('article_detail', article_hash_id=art.article_hash_id, _external=True)
         published = art.published_at
@@ -2835,9 +2887,9 @@ def rss_feed():
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>'
-        '<title>BrieflyAI - Community Stories</title>'
+        '<title>BrieflyAI: India news in short</title>'
         f'<link>{_xml_escape(url_for("index", _external=True))}</link>'
-        '<description>AI-summarized, India-centric news and community perspectives.</description>'
+        '<description>60-word AI summaries and key takeaways of the day\'s top stories from India and the world.</description>'
         '<language>en-in</language>'
         f'<atom:link href="{_xml_escape(url_for("rss_feed", _external=True))}" rel="self" type="application/rss+xml" />'
         + ''.join(items) +
@@ -2863,7 +2915,9 @@ def sitemap():
     for endpoint in ('about', 'contact', 'privacy', 'terms'):
         add(url_for(endpoint, _external=True), 'monthly', '0.4')
     for category in app.config['CATEGORIES']:
-        add(url_for('index', category_name=category, page=1, _external=True), 'hourly', '0.8')
+        if category == 'Community Hub' and not _has_community_posts():
+            continue  # an empty page is noindexed, so it stays out of the sitemap too
+        add(url_for('index', category_name=category, _external=True), 'hourly', '0.8')
     for slug, _label in NEWS_TOPICS:
         add(url_for('topic_news', slug=slug, _external=True), 'hourly', '0.7')
 
@@ -2874,12 +2928,67 @@ def sitemap():
             add(url_for('article_detail', article_hash_id=art.article_hash_id, _external=True),
                 'weekly', '0.7', art.published_at)
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f"Sitemap query failed: {e}", exc_info=True)
+
+    # News stories, but only those with a BrieflyAI summary: a story without one is just the
+    # publisher's headline and is marked noindex, so listing it would waste crawl budget.
+    for row, analysed_at in _summarised_stories(limit=20000):
+        add(url_for('article_detail', article_hash_id=row.article_hash_id, _external=True),
+            'weekly', '0.6', analysed_at or row.published_at)
 
     xml = ('<?xml version="1.0" encoding="UTF-8"?>'
            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
            + ''.join(urls) + '</urlset>')
     return Response(xml, mimetype='application/xml')
+
+
+def _has_community_posts():
+    try:
+        return db.session.query(CommunityArticle.id).first() is not None
+    except Exception:
+        db.session.rollback()
+        return False
+
+
+def _summarised_stories(limit=50, since=None):
+    """(StoredArticle, summary time) pairs for news stories that have an AI summary, newest first."""
+    try:
+        q = (db.session.query(StoredArticle, ArticleAnalysis.created_at)
+             .join(ArticleAnalysis, ArticleAnalysis.article_hash_id == StoredArticle.article_hash_id)
+             .filter(ArticleAnalysis.groq_summary.isnot(None)))
+        if since is not None:
+            q = q.filter(StoredArticle.published_at >= _naive_utc(since))
+        return q.order_by(StoredArticle.published_at.desc()).limit(limit).all()
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Summarised story lookup failed: {e}", exc_info=True)
+        return []
+
+
+@app.route('/news-sitemap.xml')
+def news_sitemap():
+    """Google News sitemap: summarised stories from the last 48 hours (Google reads at most 1,000)."""
+    entries = []
+    for row, _analysed_at in _summarised_stories(limit=1000, since=_utcnow() - timedelta(hours=48)):
+        published = row.published_at.replace(tzinfo=timezone.utc) if row.published_at else _utcnow()
+        entries.append(
+            "<url>"
+            f"<loc>{_xml_escape(url_for('article_detail', article_hash_id=row.article_hash_id, _external=True))}</loc>"
+            "<news:news><news:publication><news:name>BrieflyAI</news:name><news:language>en</news:language></news:publication>"
+            f"<news:publication_date>{published.isoformat()}</news:publication_date>"
+            f"<news:title>{_xml_escape(row.title)}</news:title></news:news>"
+            "</url>")
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>'
+           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
+           'xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">'
+           + ''.join(entries) + '</urlset>')
+    return Response(xml, mimetype='application/xml')
+
+
+@app.route('/favicon.ico')
+def favicon_ico():
+    return redirect(url_for('app_icon', size=192, v=2), code=301)
 
 
 @app.context_processor
@@ -2955,6 +3064,7 @@ def robots_txt():
         "Disallow: /healthz",
         "",
         f"Sitemap: {url_for('sitemap', _external=True)}",
+        f"Sitemap: {url_for('news_sitemap', _external=True)}",
     ]
     return Response("\n".join(lines), mimetype='text/plain')
 
@@ -4486,19 +4596,20 @@ BASE_HTML_TEMPLATE = """
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <link rel="manifest" href="{{ url_for('web_manifest') }}">
     <link rel="icon" href="{{ url_for('app_icon', size=192, v=2) }}" type="image/svg+xml">
-    <link rel="alternate" type="application/rss+xml" title="BrieflyAI - Community Stories" href="{{ url_for('rss_feed') }}">
+    <link rel="alternate" type="application/rss+xml" title="BrieflyAI: India news in short" href="{{ url_for('rss_feed') }}">
     {% if adsense_client %}<meta name="google-adsense-account" content="{{ adsense_client }}">{% endif %}
     {% if ads_on_page %}<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client }}" crossorigin="anonymous"></script>{% endif %}
     <title>{% block title %}BrieflyAI{% endblock %}</title>
 
     {# --- SEO / social sharing. Pages override the inner blocks. --- #}
     {% block meta %}
-    <meta name="description" content="{% block meta_description %}AI-summarized, India-centric news. Get the key facts in seconds.{% endblock %}">
+    <meta name="description" content="{% block meta_description %}Today's top India news in 60-word AI summaries with key takeaways, from trusted newsrooms. Free to read on BrieflyAI.{% endblock %}">
+    {% block robots_meta %}{% endblock %}
     <link rel="canonical" href="{% block canonical_url %}{{ request.base_url }}{% endblock %}">
     <meta property="og:site_name" content="BrieflyAI">
     <meta property="og:type" content="{% block og_type %}website{% endblock %}">
-    <meta property="og:title" content="{% block og_title %}BrieflyAI{% endblock %}">
-    <meta property="og:description" content="{% block og_description %}AI-summarized, India-centric news. Get the key facts in seconds.{% endblock %}">
+    <meta property="og:title" content="{% block og_title %}{{ self.title()|trim }}{% endblock %}">
+    <meta property="og:description" content="{% block og_description %}{{ self.meta_description()|trim }}{% endblock %}">
     <meta property="og:url" content="{% block og_url %}{{ request.base_url }}{% endblock %}">
     {% block og_image %}{% endblock %}
     <meta name="twitter:card" content="{% block twitter_card %}summary_large_image{% endblock %}">
@@ -5521,7 +5632,7 @@ BASE_HTML_TEMPLATE = """
 
     <div class="offcanvas offcanvas-end" tabindex="-1" id="mainOffcanvas" aria-labelledby="mainOffcanvasLabel">
         <div class="offcanvas-header">
-            <h2 class="offcanvas-title" id="mainOffcanvasLabel"><svg class="logo-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg><span>Menu</span></h2>
+            <div class="offcanvas-title" id="mainOffcanvasLabel"><svg class="logo-mark" viewBox="0 0 32 32" width="24" height="24" aria-hidden="true" focusable="false"><rect class="logo-tile" x="1" y="1" width="30" height="30" rx="9"/><rect class="logo-line" x="8" y="8.5" width="16" height="3" rx="1.5"/><rect class="logo-line" x="8" y="14.5" width="11" height="3" rx="1.5"/><rect class="logo-gist" x="8" y="20.5" width="6" height="3" rx="1.5"/></svg><span>Menu</span></div>
             <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close menu"></button>
         </div>
         <div class="offcanvas-body d-flex flex-column">
@@ -5615,7 +5726,7 @@ BASE_HTML_TEMPLATE = """
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header border-0 pb-0">
-                    <h2 class="modal-title h5" id="confirmActionModalLabel">Please confirm</h2>
+                    <div class="modal-title h5" id="confirmActionModalLabel">Please confirm</div>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -5633,7 +5744,7 @@ BASE_HTML_TEMPLATE = """
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header border-0 pb-2">
-                    <h2 class="modal-title h5" id="shortcutsModalLabel"><i class="ph ph-keyboard me-2" aria-hidden="true"></i>Keyboard shortcuts</h2>
+                    <div class="modal-title h5" id="shortcutsModalLabel"><i class="ph ph-keyboard me-2" aria-hidden="true"></i>Keyboard shortcuts</div>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -5681,7 +5792,7 @@ BASE_HTML_TEMPLATE = """
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content p-4">
                 <div class="modal-header border-0 pb-0">
-                    <h2 class="modal-title h4" id="addArticleModalLabel">Post a new article</h2>
+                    <div class="modal-title h4" id="addArticleModalLabel">Post a new article</div>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -5729,7 +5840,7 @@ BASE_HTML_TEMPLATE = """
                         <h2>Read</h2>
                         <ul>
                             <li><a href="{{ url_for('index') }}">Today's briefing</a></li>
-                            {% for cat_item in categories %}<li><a href="{{ url_for('index', category_name=cat_item, page=1) }}">{{ category_labels.get(cat_item, cat_item) }}</a></li>{% endfor %}
+                            {% for cat_item in categories %}<li><a href="{{ url_for('index', category_name=cat_item) }}">{{ category_labels.get(cat_item, cat_item) }}</a></li>{% endfor %}
                             <li><a href="{{ url_for('rss_feed') }}">RSS feed</a></li>
                         </ul>
                     </nav>
@@ -6377,7 +6488,7 @@ _STORY_CARD_TEMPLATE = """
 {% set source_label = (art.author.name if is_comm and art.author else (art.source_name if is_comm else art.source.name)) or 'News' %}
 <article class="article-card animate-fade-in d-flex flex-column w-100" style="animation-delay: {{ ([card_i, 8]|min * 0.04)|round(2) }}s">
     <div class="article-image-container {% if not img_src %}img-fallback{% endif %}">
-        <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if img_src %}<img src="{{ img_src }}" class="article-image" alt="" loading="{{ 'eager' if card_i < 3 else 'lazy' }}" decoding="async">{% endif %}</a>
+        <a href="{{ article_url }}" tabindex="-1" aria-hidden="true">{% if img_src %}<img src="{{ img_src }}" class="article-image" alt="{{ art.title|truncate(120) }}" width="400" height="200" loading="{{ 'eager' if card_i < 3 else 'lazy' }}" decoding="async">{% endif %}</a>
         <div class="img-fallback-icon" aria-hidden="true"><i class="ph ph-newspaper"></i></div>
         {% if is_comm %}<span class="topic-chip">Community</span>{% elif art.topic and topic_labels.get(art.topic) %}<a class="topic-chip" href="{{ url_for('topic_news', slug=art.topic) }}">{{ topic_labels[art.topic] }}</a>{% endif %}
     </div>
@@ -6412,19 +6523,34 @@ _STORY_CARD_TEMPLATE = """
 
 INDEX_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
-{% block title %}
-    {% if query %}Search: {{ query|truncate(30) }}
-    {% elif topic_title %}{{ topic_title }} news
-    {% elif current_filter_date %}News on {{ current_filter_date }}
-    {% elif selected_category and not is_main_homepage %}{{ category_labels.get(selected_category, selected_category) }}
-    {% else %}Latest news from India{% endif %} - BrieflyAI
-{% endblock %}
+{% block title -%}
+    {%- if query %}Search: {{ query|truncate(30) }} | BrieflyAI
+    {%- elif topic_title %}{{ topic_seo.get(current_topic, {}).get('title', topic_title ~ ' News Today in Short') }}{% if current_page > 1 %}, page {{ current_page }}{% endif %} | BrieflyAI
+    {%- elif current_filter_date %}News on {{ current_filter_date }}, Summarised | BrieflyAI
+    {%- elif selected_category and not is_main_homepage %}{{ category_seo.get(selected_category, {}).get('title', category_labels.get(selected_category, selected_category)) }}{% if current_page > 1 %}, page {{ current_page }}{% endif %} | BrieflyAI
+    {%- else %}Today's News in Short: Top India Headlines | BrieflyAI{% endif -%}
+{%- endblock %}
+{% block meta_description -%}
+    {%- if query %}BrieflyAI search results for {{ query|truncate(40) }}: short AI summaries of matching news stories.
+    {%- elif topic_title %}{{ topic_seo.get(current_topic, {}).get('description', topic_title ~ ' news in 60-word AI summaries with key takeaways, updated through the day.') }}
+    {%- elif current_filter_date %}Top news stories from {{ current_filter_date }}, each in a 60-word AI summary with key takeaways.
+    {%- elif selected_category and not is_main_homepage %}{{ category_seo.get(selected_category, {}).get('description', '') }}
+    {%- else %}Today's biggest stories from India and the world in under a minute each. 60-word AI summaries with key takeaways, updated through the day.{% endif -%}
+{%- endblock %}
+{% block robots_meta %}{% if query or current_filter_date or (selected_category == 'Community Hub' and not articles) %}<meta name="robots" content="noindex, follow">{% endif %}{% endblock %}
+{% block canonical_url -%}
+    {%- if is_main_homepage %}{{ url_for('index', _external=True) }}
+    {%- elif topic_title %}{{ url_for('topic_news', slug=current_topic, page=current_page, _external=True) if current_page > 1 else url_for('topic_news', slug=current_topic, _external=True) }}
+    {%- elif selected_category and not query and not current_filter_date %}{{ url_for('index', category_name=selected_category, page=current_page, _external=True) if current_page > 1 else url_for('index', category_name=selected_category, _external=True) }}
+    {%- else %}{{ request.base_url }}{% endif -%}
+{%- endblock %}
 
 {% block content %}
 
 {% if is_main_homepage %}
 
     <div class="animate-fade-in">
+        <h1 class="visually-hidden">Today's news in short: top India headlines</h1>
 
         {% if synthesis %}
         <section class="ai-synthesis-card" aria-labelledby="briefingHeading">
@@ -6718,14 +6844,16 @@ document.addEventListener('DOMContentLoaded', function () {
 """
 ARTICLE_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
-{% block title %}{{ article.title|truncate(50) if article else "Article" }} - BrieflyAI{% endblock %}
+{% block title %}{% if article %}{{ article.title|truncate(62, False, '…') }} | BrieflyAI{% else %}Story not found | BrieflyAI{% endif %}{% endblock %}
+{# A news story without a BrieflyAI summary is only the publisher's headline and excerpt: keep it out of search until the summary exists. #}
+{% block robots_meta %}{% if not article or (not is_community_article and not article.groq_summary) %}<meta name="robots" content="noindex, follow">{% endif %}{% endblock %}
 
 {# Jinja hoists block definitions and gives each its own scope, so the values are
    recomputed inside every block rather than shared via a top-level {% set %}. #}
-{% block meta_description %}{% if article %}{{ ((article.groq_summary if is_community_article and article.groq_summary else article.description) or 'AI-summarized news from BrieflyAI.')|striptags|truncate(155) }}{% else %}AI-summarized, India-centric news.{% endif %}{% endblock %}
+{% block meta_description %}{% if article %}{{ (article.groq_summary or article.description or 'AI-summarized news from BrieflyAI.')|striptags|truncate(155) }}{% else %}AI-summarized, India-centric news.{% endif %}{% endblock %}
 {% block og_type %}article{% endblock %}
 {% block og_title %}{% if article %}{{ article.title }}{% else %}Article not found{% endif %}{% endblock %}
-{% block og_description %}{% if article %}{{ ((article.groq_summary if is_community_article and article.groq_summary else article.description) or 'AI-summarized news from BrieflyAI.')|striptags|truncate(200) }}{% else %}AI-summarized, India-centric news.{% endif %}{% endblock %}
+{% block og_description %}{% if article %}{{ (article.groq_summary or article.description or 'AI-summarized news from BrieflyAI.')|striptags|truncate(200) }}{% else %}AI-summarized, India-centric news.{% endif %}{% endblock %}
 {% block og_image %}
     {% if article %}
         {% set art_image = article.image_url if is_community_article else article.urlToImage %}
@@ -6744,12 +6872,25 @@ ARTICLE_HTML_TEMPLATE = """
   "@context": "https://schema.org",
   "@type": "NewsArticle",
   "headline": {{ article.title|truncate(110)|tojson }},
-  "description": {{ ((article.groq_summary if is_community_article and article.groq_summary else article.description) or '')|striptags|truncate(250)|tojson }},
+  "description": {{ (article.groq_summary or article.description or '')|striptags|truncate(250)|tojson }},
   {% if art_image %}"image": [{{ art_image|tojson }}],{% endif %}
   "datePublished": {{ (article.published_at.isoformat() if is_community_article and article.published_at else (article.publishedAt if not is_community_article and article.publishedAt else ''))|tojson }},
-  "author": { "@type": "Person", "name": {{ (article.author.name if is_community_article and article.author else (article.source.name if not is_community_article and article.source else 'BrieflyAI'))|tojson }} },
-  "publisher": { "@type": "Organization", "name": "BrieflyAI" },
+  {% if is_community_article and article.author %}"author": { "@type": "Person", "name": {{ article.author.name|tojson }}, "url": {{ url_for('public_profile', username=article.author.username, _external=True)|tojson }} },
+  {% else %}"author": { "@type": "Organization", "name": "BrieflyAI", "url": {{ url_for('about', _external=True)|tojson }} },
+  {% if article.url %}"isBasedOn": { "@type": "NewsArticle", "url": {{ article.url|tojson }}, "publisher": { "@type": "Organization", "name": {{ (article.source.name if article.source else 'News')|tojson }} } },{% endif %}
+  {% endif %}"publisher": { "@type": "Organization", "name": "BrieflyAI", "url": {{ url_for('landing', _external=True)|tojson }}, "logo": { "@type": "ImageObject", "url": {{ url_for('static', filename='og-welcome.jpg', _external=True)|tojson }} } },
   "mainEntityOfPage": { "@type": "WebPage", "@id": {{ request.base_url|tojson }} }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "News", "item": {{ url_for('index', _external=True)|tojson }} },
+    {% if not is_community_article and article.topic and topic_labels.get(article.topic) %}{ "@type": "ListItem", "position": 2, "name": {{ topic_labels[article.topic]|tojson }}, "item": {{ url_for('topic_news', slug=article.topic, _external=True)|tojson }} },
+    { "@type": "ListItem", "position": 3, "name": {{ article.title|truncate(110)|tojson }} }{% else %}{ "@type": "ListItem", "position": 2, "name": {{ article.title|truncate(110)|tojson }} }{% endif %}
+  ]
 }
 </script>
 {% endif %}
@@ -7547,6 +7688,7 @@ window.brieflyGoogleSignIn = function (response) {
 LOGIN_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}Login - BrieflyAI{% endblock %}
+{% block robots_meta %}<meta name="robots" content="noindex, follow">{% endblock %}
 {% block body_class %}body-auth{% endblock %}
 
 {% block content %}
@@ -7602,6 +7744,7 @@ document.addEventListener('DOMContentLoaded', function () {
 REGISTER_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
 {% block title %}Register - BrieflyAI{% endblock %}
+{% block robots_meta %}<meta name="robots" content="noindex, follow">{% endblock %}
 {% block body_class %}body-auth{% endblock %}
 
 {% block content %}
@@ -7825,7 +7968,7 @@ PROFILE_HTML_TEMPLATE = """
             <form method="POST" action="{{ url_for('delete_account') }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="modal-header border-0 pb-0">
-                    <h2 class="modal-title h5" id="deleteAccountLabel">Delete your account?</h2>
+                    <div class="modal-title h5" id="deleteAccountLabel">Delete your account?</div>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -7923,7 +8066,8 @@ PUBLIC_PROFILE_HTML_TEMPLATE = """
 """
 ABOUT_US_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
-{% block title %}About Us - BrieflyAI{% endblock %}
+{% block title %}About BrieflyAI: How Our AI News Summaries Work{% endblock %}
+{% block meta_description %}BrieflyAI condenses India's top news into neutral 60-word summaries. How we pick sources, how the AI writes summaries and how to report a mistake.{% endblock %}
 {% block content %}
 <div class="animate-fade-in">
     <div class="page-header-static">
@@ -7944,6 +8088,19 @@ ABOUT_US_HTML_TEMPLATE = """
             Beyond AI-driven news, BrieflyAI is a platform for discussion and community engagement. Our Community Hub allows users to post their own articles, share perspectives, and engage in meaningful conversations about the topics that shape our world. We are committed to fostering a respectful and intelligent environment for all our members.
         </p>
 
+        <h2><i class="icon ph ph-newspaper" aria-hidden="true"></i>How a story gets summarised</h2>
+        <p>
+            BrieflyAI collects headlines from the public news feeds of established Indian and international newsrooms. For each story, an AI language model reads the publisher's article and writes a neutral summary of under 60 words, followed by three or four key takeaways. Every summary links to the original report, and the original publisher is always named.
+        </p>
+        <p>
+            Summaries are written automatically and are not checked by a person before they appear. AI can misread or leave out details, so treat a summary as a quick overview and check the original article before relying on it. If a story cannot be read, we show the publisher's headline and a link instead of guessing.
+        </p>
+
+        <h2><i class="icon ph ph-pencil-simple-line" aria-hidden="true"></i>Corrections</h2>
+        <p>
+            Spotted a summary that is wrong or misleading? Use the report button on the story, or email the address on our <a href="{{ url_for('contact') }}">contact page</a> with the link. We fix or remove inaccurate summaries as soon as we can.
+        </p>
+
         <h2><i class="icon ph ph-cpu" aria-hidden="true"></i>Our technology</h2>
         <p>
             We use state-of-the-art Natural Language Processing (NLP) models to analyze and summarize news content from trusted sources. Our system is designed to identify the most crucial points of an article, presenting them as a quick summary and a list of key takeaways, ensuring you get the essence of the story in seconds.
@@ -7954,7 +8111,8 @@ ABOUT_US_HTML_TEMPLATE = """
 """
 CONTACT_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
-{% block title %}Contact Us - BrieflyAI{% endblock %}
+{% block title %}Contact BrieflyAI: Feedback, Corrections, Partnerships{% endblock %}
+{% block meta_description %}Get in touch with BrieflyAI about feedback, a correction to a summary, partnerships or media enquiries. We read every message.{% endblock %}
 {% block content %}
 <div class="animate-fade-in">
     <div class="page-header-static">
@@ -7999,7 +8157,8 @@ CONTACT_HTML_TEMPLATE = """
 """
 PRIVACY_POLICY_HTML_TEMPLATE = """
 {% extends "BASE_HTML_TEMPLATE" %}
-{% block title %}Privacy Policy - BrieflyAI{% endblock %}
+{% block title %}Privacy Policy | BrieflyAI{% endblock %}
+{% block meta_description %}What BrieflyAI collects when you read, sign in, comment or subscribe, how it is used, and the choices you have about your data.{% endblock %}
 {% block content %}
 <div class="animate-fade-in">
     <div class="page-header-static">
@@ -8436,6 +8595,14 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
 
     <script>document.documentElement.classList.add('js');</script>
     <script type="application/ld+json">{{ faq_schema|tojson }}</script>
+    <script type="application/ld+json">{{ {"@context": "https://schema.org", "@graph": [
+        {"@type": "Organization", "@id": canonical_url ~ "#organization", "name": "BrieflyAI", "url": canonical_url,
+         "logo": url_for('static', filename='og-welcome.jpg', _external=True)},
+        {"@type": "WebSite", "@id": canonical_url ~ "#website", "name": "BrieflyAI", "url": canonical_url,
+         "publisher": {"@id": canonical_url ~ "#organization"}, "inLanguage": "en-IN",
+         "potentialAction": {"@type": "SearchAction",
+                             "target": url_for('search_results', _external=True) ~ "?query={search_term_string}",
+                             "query-input": "required name=search_term_string"}}]}|tojson }}</script>
 
     <link rel="preload" as="image" type="image/webp" fetchpriority="high"
           href="{{ url_for('static', filename='landing/hero-nirmahal-ghat-2400.webp') }}"
@@ -9378,8 +9545,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
                         <h2 class="title-4">Read</h2>
                         <ul class="body-6">
                             <li><a href="{{ url_for('index') }}">Today's briefing</a></li>
-                            <li><a href="{{ url_for('index', category_name='Popular Stories', page=1) }}">Most read</a></li>
-                            <li><a href="{{ url_for('index', category_name='Community Hub', page=1) }}">Community Hub</a></li>
+                            <li><a href="{{ url_for('index', category_name='Popular Stories') }}">Most read</a></li>
+                            <li><a href="{{ url_for('index', category_name='Community Hub') }}">Community Hub</a></li>
                             <li><a href="{{ url_for('rss_feed') }}">RSS feed</a></li>
                         </ul>
                     </nav>
