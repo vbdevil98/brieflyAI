@@ -8093,7 +8093,7 @@ ABOUT_US_HTML_TEMPLATE = """
             BrieflyAI collects headlines from the public news feeds of established Indian and international newsrooms. For each story, an AI language model reads the publisher's article and writes a neutral summary of under 60 words, followed by three or four key takeaways. Every summary links to the original report, and the original publisher is always named.
         </p>
         <p>
-            Summaries are written automatically and are not checked by a person before they appear. AI can misread or leave out details, so treat a summary as a quick overview and check the original article before relying on it. If a story cannot be read, we show the publisher's headline and a link instead of guessing.
+            Summaries are written by AI. AI can misread or leave out details, so treat a summary as a quick overview and check the original article before relying on it. If a story cannot be read, we show the publisher's headline and a link instead of guessing.
         </p>
 
         <h2><i class="icon ph ph-pencil-simple-line" aria-hidden="true"></i>Corrections</h2>
