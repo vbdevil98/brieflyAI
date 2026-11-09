@@ -141,6 +141,11 @@ app.config['CATEGORIES'] = ['All Articles', 'Popular Stories', "Yesterday's Head
 # What readers see; the keys above stay as they are because they are in old links.
 CATEGORY_LABELS = {'All Articles': 'Latest', 'Popular Stories': 'Most read',
                    "Yesterday's Headlines": 'Yesterday', 'Community Hub': 'Community'}
+# Official BrieflyAI profiles: shown on the Contact page and given to Google as the brand's sameAs links.
+# Add a profile here (label, icon, url) and it appears everywhere.
+SOCIAL_PROFILES = [
+    ('LinkedIn', 'linkedin-logo', 'https://www.linkedin.com/company/brieflyainews/'),
+]
 # Search titles and descriptions for list pages (titles before " | BrieflyAI", under 60 characters in all).
 CATEGORY_SEO = {
     'All Articles': {'title': 'Latest News India in Short, Updated Hourly',
@@ -1563,6 +1568,7 @@ def inject_global_vars():
             'category_labels': CATEGORY_LABELS,
             'category_seo': CATEGORY_SEO,
             'topic_seo': TOPIC_SEO,
+            'social_profiles': SOCIAL_PROFILES,
             'google_client_id': GOOGLE_CLIENT_ID}
 
 MAX_PAGE = 10000  # guards against ?page=999999999 style requests
@@ -8153,10 +8159,8 @@ CONTACT_HTML_TEMPLATE = """
             <h2 class="h3">Follow us</h2>
             <p class="text-muted">Stay connected with us on social media.</p>
             <div class="contact-social-links mt-3">
-                <a href="#" title="Twitter" aria-label="BrieflyAI on Twitter"><i class="ph ph-x-logo" aria-hidden="true"></i></a>
-                <a href="#" title="Facebook" aria-label="BrieflyAI on Facebook"><i class="ph ph-facebook-logo" aria-hidden="true"></i></a>
-                <a href="#" title="LinkedIn" aria-label="BrieflyAI on LinkedIn"><i class="ph ph-linkedin-logo" aria-hidden="true"></i></a>
-                <a href="#" title="Instagram" aria-label="BrieflyAI on Instagram"><i class="ph ph-instagram-logo" aria-hidden="true"></i></a>
+                {% for label, icon, url in social_profiles %}<a href="{{ url }}" title="{{ label }}" aria-label="BrieflyAI on {{ label }}" target="_blank" rel="noopener me"><i class="ph ph-{{ icon }}" aria-hidden="true"></i></a>
+                {% endfor %}
             </div>
         </div>
     </div>
@@ -8608,7 +8612,8 @@ LANDING_HTML_TEMPLATE = r"""<!doctype html>
     <script type="application/ld+json">{{ faq_schema|tojson }}</script>
     <script type="application/ld+json">{{ {"@context": "https://schema.org", "@graph": [
         {"@type": "Organization", "@id": canonical_url ~ "#organization", "name": "BrieflyAI", "url": canonical_url,
-         "logo": url_for('static', filename='favicon-512.png', _external=True)},
+         "logo": url_for('static', filename='favicon-512.png', _external=True),
+         "sameAs": social_profiles|map(attribute=2)|list},
         {"@type": "WebSite", "@id": canonical_url ~ "#website", "name": "BrieflyAI", "url": canonical_url,
          "publisher": {"@id": canonical_url ~ "#organization"}, "inLanguage": "en-IN",
          "potentialAction": {"@type": "SearchAction",
